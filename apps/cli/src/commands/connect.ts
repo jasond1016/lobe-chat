@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type {
+  AgentRunRequestMessage,
   DeviceSystemInfo,
   SystemInfoRequestMessage,
   ToolCallRequestMessage,
@@ -25,7 +26,9 @@ import {
   stopDaemon,
   writeStatus,
 } from '../daemon/manager';
-import { loadSettings, normalizeUrl, saveSettings } from '../settings';
+import { spawnHeteroAgentRun } from '../device/agentRun';
+import { registerDevice, resolveDeviceIdentity } from '../device/register';
+import { loadOrCreateConnectionId, loadSettings, normalizeUrl, saveSettings } from '../settings';
 import { executeToolCall } from '../tools';
 import { cleanupAllProcesses } from '../tools/shell';
 import { log, setVerbose } from '../utils/logger';
@@ -192,8 +195,19 @@ async function runConnect(options: ConnectOptions, isDaemonChild: boolean) {
 
   const resolvedGatewayUrl = gatewayUrl || OFFICIAL_GATEWAY_URL;
 
+  // Resolve a stable device identity. An explicit `--device-id` wins (lets a
+  // user pin a VM to a fixed identity); otherwise derive from the machine id so
+  // the same machine + user maps to one device across reconnects.
+  const identity = resolveDeviceIdentity(auth.userId, options.deviceId);
+
+  // Freeform channel label (`cli` by default); `LOBEHUB_CLI_CHANNEL` lets a
+  // dev build tag itself `cli-dev` so the gateway can prioritise / display it.
+  const channel = process.env.LOBEHUB_CLI_CHANNEL || 'cli';
+
   const client = new GatewayClient({
-    deviceId: options.deviceId,
+    channel,
+    connectionId: loadOrCreateConnectionId(),
+    deviceId: identity?.deviceId ?? options.deviceId,
     gatewayUrl: resolvedGatewayUrl,
     logger: isDaemonChild ? createDaemonLogger() : log,
     serverUrl: auth.serverUrl,
@@ -248,14 +262,14 @@ async function runConnect(options: ConnectOptions, isDaemonChild: boolean) {
 
   // Handle tool call requests
   client.on('tool_call_request', async (request: ToolCallRequestMessage) => {
-    const { requestId, toolCall } = request;
+    const { requestId, timeout, toolCall } = request;
     if (isDaemonChild) {
       appendLog(`[TOOL] ${toolCall.apiName} (${requestId})`);
     } else {
       log.toolCall(toolCall.apiName, requestId, toolCall.arguments);
     }
 
-    const result = await executeToolCall(toolCall.apiName, toolCall.arguments);
+    const result = await executeToolCall(toolCall.apiName, toolCall.arguments, timeout);
 
     if (isDaemonChild) {
       appendLog(`[RESULT] ${result.success ? 'OK' : 'FAIL'} (${requestId})`);
@@ -268,9 +282,42 @@ async function runConnect(options: ConnectOptions, isDaemonChild: boolean) {
       result: {
         content: result.content,
         error: result.error,
+        state: result.state,
         success: result.success,
       },
     });
+  });
+
+  // Handle gateway-dispatched agent runs (heterogeneous agents, e.g. Claude
+  // Code). Mirrors the desktop app: spawn `lh hetero exec`, which owns the full
+  // execution + server-ingest pipeline. Ack with the spawn outcome — `accepted`
+  // once the child starts, `rejected` if it fails to spawn (e.g. bad cwd) — so
+  // a failed dispatch surfaces as an error instead of a stuck assistant message.
+  client.on('agent_run_request', async (request: AgentRunRequestMessage) => {
+    info(
+      `Received agent_run_request: operationId=${request.operationId} type=${request.agentType}`,
+    );
+    try {
+      const ack = await spawnHeteroAgentRun(
+        {
+          agentType: request.agentType,
+          cwd: request.cwd,
+          jwt: request.jwt,
+          operationId: request.operationId,
+          prompt: request.prompt,
+          resumeSessionId: request.resumeSessionId,
+          serverUrl: auth.serverUrl,
+          systemContext: request.systemContext,
+          topicId: request.topicId,
+        },
+        { error, info },
+      );
+      client.sendAgentRunAck({ operationId: request.operationId, ...ack });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      error(`agent_run_request failed: ${reason}`);
+      client.sendAgentRunAck({ operationId: request.operationId, reason, status: 'rejected' });
+    }
   });
 
   client.on('connected', () => {
@@ -385,6 +432,21 @@ async function runConnect(options: ConnectOptions, isDaemonChild: boolean) {
     cleanup();
     process.exit(0);
   });
+
+  // Register this device in the server registry before opening the WS, so the
+  // row exists by the time the gateway reports it online. `lh login` already
+  // registers, but re-running here is cheap (idempotent upsert) and covers
+  // `--token` sessions that never went through login. Best-effort: a failure
+  // must not block the connection.
+  if (identity) {
+    try {
+      // Reuse the already-resolved auth (respects `--token` mode) so we don't
+      // re-discover creds and exit when none are found.
+      await registerDevice(auth, identity);
+    } catch (err) {
+      error(`Device registration failed (non-fatal): ${(err as Error).message}`);
+    }
+  }
 
   // Connect
   await client.connect();

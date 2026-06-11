@@ -257,6 +257,7 @@ export type ExtendParamsType =
   | 'reasoningBudgetToken32k'
   | 'reasoningBudgetToken80k'
   | 'enableReasoning'
+  | 'preserveThinking'
   | 'enableAdaptiveThinking'
   | 'disableContextCaching'
   | 'effort'
@@ -271,6 +272,7 @@ export type ExtendParamsType =
   | 'hy3ReasoningEffort'
   | 'codexMaxReasoningEffort'
   | 'opus47Effort'
+  | 'step3_5ReasoningEffort'
   | 'textVerbosity'
   | 'thinking'
   | 'thinkingBudget'
@@ -278,7 +280,6 @@ export type ExtendParamsType =
   | 'thinkingLevel2'
   | 'thinkingLevel3'
   | 'thinkingLevel4'
-  | 'thinkingLevel5'
   | 'imageAspectRatio'
   | 'imageAspectRatio2'
   | 'imageResolution'
@@ -307,6 +308,7 @@ export const ExtendParamsTypeSchema = z.enum([
   'reasoningBudgetToken32k',
   'reasoningBudgetToken80k',
   'enableReasoning',
+  'preserveThinking',
   'enableAdaptiveThinking',
   'disableContextCaching',
   'effort',
@@ -321,6 +323,7 @@ export const ExtendParamsTypeSchema = z.enum([
   'hy3ReasoningEffort',
   'codexMaxReasoningEffort',
   'opus47Effort',
+  'step3_5ReasoningEffort',
   'textVerbosity',
   'thinking',
   'thinkingBudget',
@@ -328,7 +331,6 @@ export const ExtendParamsTypeSchema = z.enum([
   'thinkingLevel2',
   'thinkingLevel3',
   'thinkingLevel4',
-  'thinkingLevel5',
   'imageAspectRatio',
   'imageAspectRatio2',
   'imageResolution',

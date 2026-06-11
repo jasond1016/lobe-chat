@@ -26,13 +26,6 @@ vi.mock('antd-style', () => ({
     neonDot: 'neonDot',
     neonDotWrapper: 'neonDotWrapper',
   }),
-  createStyles: () => () => ({
-    cx: (...classNames: Array<false | string | undefined>) => classNames.filter(Boolean).join(' '),
-    styles: {
-      container: 'container',
-      dot: 'dot',
-    },
-  }),
   cssVar: {
     colorInfo: '#00f',
     colorTextDescription: '#999',
@@ -63,15 +56,15 @@ vi.mock('@/const/version', () => ({ isDesktop: false }));
 vi.mock('@/const/url', () => ({
   SESSION_CHAT_TOPIC_URL: (agentId: string, topicId: string) => `/agent/${agentId}/${topicId}`,
 }));
-vi.mock('@/features/Electron/titlebar/RecentlyViewed/plugins', () => ({
-  pluginRegistry: { parseUrl: vi.fn() },
-}));
 vi.mock('@/features/NavPanel/components/NavItem', () => ({
-  default: ({ active, title }: { active?: boolean; title?: ReactNode }) => (
-    <div data-active={String(active)} data-testid="nav-item">
+  default: ({ active, href, title }: { active?: boolean; href?: string; title?: ReactNode }) => (
+    <div data-active={String(active)} data-href={href} data-testid="nav-item">
       {title}
     </div>
   ),
+}));
+vi.mock('@/business/client/hooks/useActiveWorkspaceSlug', () => ({
+  useActiveWorkspaceSlug: () => 'team',
 }));
 vi.mock('@/routes/(main)/agent/channel/const', () => ({
   getPlatformIcon: () => null,
@@ -143,5 +136,21 @@ describe('TopicItem active state', () => {
 
     expect(screen.getByTestId('nav-item')).toHaveAttribute('data-active', 'false');
     expect(screen.queryByTestId('topic-thread-list')).not.toBeInTheDocument();
+  });
+
+  it('prefixes the cmd-click href with the active workspace slug', () => {
+    useTopicNavigationMock.mockReturnValue({
+      isInAgentSubRoute: false,
+      isInTopicContextRoute: false,
+      navigateToTopic: vi.fn(),
+      routeTopicId: undefined,
+    });
+
+    render(<TopicItem id="tpc_test" title="Topic" />);
+
+    expect(screen.getByTestId('nav-item')).toHaveAttribute(
+      'data-href',
+      '/team/agent/agt_test/tpc_test',
+    );
   });
 });

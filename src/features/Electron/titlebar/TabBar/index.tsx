@@ -6,28 +6,36 @@ import { cx } from 'antd-style';
 import { Plus } from 'lucide-react';
 import { startTransition, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
 
-import { usePluginContext } from '@/features/Electron/titlebar/RecentlyViewed/hooks/usePluginContext';
-import { pluginRegistry } from '@/features/Electron/titlebar/RecentlyViewed/plugins';
+import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
+import { usePermission } from '@/hooks/usePermission';
 import { electronSystemService } from '@/services/electron/system';
+import { desktopRoutes } from '@/spa/router/desktopRouter.config';
+import { type NewTabAction } from '@/spa/router/routeMeta';
 import { useElectronStore } from '@/store/electron';
 import { electronStylish } from '@/styles/electron';
 
 import { useResolvedTabs } from './hooks/useResolvedTabs';
+import { matchRouteMeta } from './resolveRouteMeta';
 import { useStyles } from './styles';
 import TabItem from './TabItem';
 
 const TAB_WIDTH = 180;
 const TAB_GAP = 0;
 
+// Fallback when the active route doesn't define createNewTab: open the home page,
+// so the "+" button stays available on every page.
+const DEFAULT_NEW_TAB_ACTION: NewTabAction = {
+  onCreate: async () => ({ url: '/' }),
+};
+
 const TabBar = () => {
   const styles = useStyles;
-  const navigate = useNavigate();
+  const navigate = useWorkspaceAwareNavigate();
   const { t } = useTranslation('electron');
+  const { allowed: canCreate, reason } = usePermission('create_content');
   const viewportRef = useRef<HTMLDivElement>(null);
   const { tabs, activeTabId } = useResolvedTabs();
-  const pluginCtx = usePluginContext();
   const activateTab = useElectronStore((s) => s.activateTab);
   const addTab = useElectronStore((s) => s.addTab);
   const removeTab = useElectronStore((s) => s.removeTab);
@@ -37,28 +45,21 @@ const TabBar = () => {
 
   const handleActivate = useCallback(
     (id: string, url: string) => {
-      // Prioritize updating the Tab activation state (high priority)
       activateTab(id);
-      const tab = tabs.find((t) => t.reference.id === id);
-      if (tab) pluginRegistry.onActivate(tab.reference);
-      // Degrade route navigation to startTransition (low priority)
       startTransition(() => navigate(url));
     },
-    [activateTab, navigate, tabs],
+    [activateTab, navigate],
   );
 
   const navigateToActive = useCallback(() => {
     const { activeTabId: newActiveId, tabs: newTabs } = useElectronStore.getState();
     if (newActiveId) {
-      const target = newTabs.find((t) => t.id === newActiveId);
-      if (target) {
-        const resolved = tabs.find((t) => t.reference.id === newActiveId);
-        if (resolved) navigate(resolved.url);
-      }
+      const target = newTabs.find((tab) => tab.id === newActiveId);
+      if (target) navigate(target.url);
     } else {
       navigate('/');
     }
-  }, [tabs, navigate]);
+  }, [navigate]);
 
   const handleClose = useCallback(
     (id: string) => {
@@ -67,10 +68,8 @@ const TabBar = () => {
 
       startTransition(() => {
         if (isActive && nextActiveId) {
-          const nextTab = tabs.find((t) => t.reference.id === nextActiveId);
-          if (nextTab) {
-            navigate(nextTab.url);
-          }
+          const nextTab = tabs.find((tab) => tab.tab.id === nextActiveId);
+          if (nextTab) navigate(nextTab.tab.url);
         }
 
         if (!nextActiveId) {
@@ -85,8 +84,8 @@ const TabBar = () => {
     (id: string) => {
       closeOtherTabs(id);
       startTransition(() => {
-        const target = tabs.find((t) => t.reference.id === id);
-        if (target) navigate(target.url);
+        const target = tabs.find((tab) => tab.tab.id === id);
+        if (target) navigate(target.tab.url);
       });
     },
     [closeOtherTabs, tabs, navigate],
@@ -112,7 +111,7 @@ const TabBar = () => {
     const viewport = viewportRef.current;
     if (!viewport || !activeTabId) return;
 
-    const activeIndex = tabs.findIndex((t) => t.reference.id === activeTabId);
+    const activeIndex = tabs.findIndex((tab) => tab.tab.id === activeTabId);
     if (activeIndex < 0) return;
 
     const tabLeft = activeIndex * (TAB_WIDTH + TAB_GAP);
@@ -126,15 +125,15 @@ const TabBar = () => {
     }
   }, [activeTabId, tabs]);
 
-  const activeReference = useMemo(() => {
-    if (!activeTabId) return null;
-    return tabs.find((t) => t.reference.id === activeTabId)?.reference ?? null;
-  }, [activeTabId, tabs]);
+  const newTabAction: NewTabAction | null = useMemo(() => {
+    if (!canCreate) return null;
+    if (!activeTabId) return DEFAULT_NEW_TAB_ACTION;
+    const activeTab = tabs.find((tab) => tab.tab.id === activeTabId);
+    if (!activeTab) return DEFAULT_NEW_TAB_ACTION;
 
-  const newTabAction = useMemo(() => {
-    if (!activeReference) return null;
-    return pluginRegistry.getNewTabAction(activeReference, pluginCtx);
-  }, [activeReference, pluginCtx]);
+    const matched = matchRouteMeta(desktopRoutes, activeTab.tab.url);
+    return matched.meta?.createNewTab?.(matched.params) ?? DEFAULT_NEW_TAB_ACTION;
+  }, [activeTabId, tabs, canCreate]);
 
   useWatchBroadcast('closeCurrentTabOrWindow', () => {
     if (tabs.length > 1 && activeTabId) {
@@ -145,6 +144,7 @@ const TabBar = () => {
   });
 
   const handleNewTab = useCallback(async () => {
+    if (!canCreate) return;
     if (!newTabAction) return;
     let result;
     try {
@@ -155,14 +155,9 @@ const TabBar = () => {
     }
     if (!result) return;
 
-    const { reference, cached } = result;
-    addTab(reference, cached, true);
-    pluginRegistry.onActivate(reference);
-
-    const resolved = pluginRegistry.resolve(reference, pluginCtx);
-    const url = resolved?.url;
-    if (url) startTransition(() => navigate(url));
-  }, [newTabAction, addTab, pluginCtx, navigate]);
+    addTab(result.url, result.cached, true);
+    startTransition(() => navigate(result.url));
+  }, [canCreate, newTabAction, addTab, navigate]);
 
   useWatchBroadcast('createNewTab', () => {
     void handleNewTab();
@@ -181,9 +176,9 @@ const TabBar = () => {
       {tabs.map((tab, index) => (
         <TabItem
           index={index}
-          isActive={tab.reference.id === activeTabId}
+          isActive={tab.tab.id === activeTabId}
           item={tab}
-          key={tab.reference.id}
+          key={tab.tab.id}
           totalCount={tabs.length}
           onActivate={handleActivate}
           onClose={handleClose}
@@ -192,13 +187,14 @@ const TabBar = () => {
           onCloseRight={handleCloseRight}
         />
       ))}
-      {newTabAction && (
+      {(newTabAction || !canCreate) && (
         <ActionIcon
           className={cx(electronStylish.nodrag, styles.newTabButton)}
+          disabled={!canCreate}
           icon={Plus}
           size="small"
-          title={t('tab.newTab')}
-          onClick={handleNewTab}
+          title={canCreate ? t('tab.newTab') : reason}
+          onClick={canCreate ? handleNewTab : undefined}
         />
       )}
     </ScrollArea>

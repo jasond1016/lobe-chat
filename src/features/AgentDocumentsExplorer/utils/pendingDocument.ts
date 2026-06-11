@@ -1,6 +1,12 @@
+import {
+  AGENT_DOCUMENT_CATEGORY,
+  AGENT_DOCUMENT_SOURCE_TYPE,
+  CUSTOM_DOCUMENT_FILE_TYPE,
+  CUSTOM_FOLDER_FILE_TYPE,
+} from '@lobechat/const';
 import { nanoid } from 'nanoid';
 
-import { type AgentDocumentItem, FOLDER_FILE_TYPE, PENDING_ID_PREFIX } from '../types';
+import { type AgentDocumentItem, PENDING_ID_PREFIX } from '../types';
 
 interface MakePendingArgs {
   agentId: string;
@@ -22,6 +28,7 @@ export const makePendingDocument = ({
     accessSelf: 1,
     accessShared: 0,
     agentId,
+    category: AGENT_DOCUMENT_CATEGORY,
     content: '',
     createdAt: now,
     deletedAt: null,
@@ -32,8 +39,11 @@ export const makePendingDocument = ({
     documentId: id,
     editorData: null,
     filename: title,
-    fileType: isFolder ? FOLDER_FILE_TYPE : 'custom/document',
+    fileType: isFolder ? CUSTOM_FOLDER_FILE_TYPE : CUSTOM_DOCUMENT_FILE_TYPE,
     id,
+    isFolder,
+    isSkillBundle: false,
+    isSkillIndex: false,
     loadRules: {} as AgentDocumentItem['loadRules'],
     metadata: null,
     parentId,
@@ -43,7 +53,7 @@ export const makePendingDocument = ({
     policyLoadPosition: '',
     policyLoadRule: '',
     source: null,
-    sourceType: 'agent',
+    sourceType: AGENT_DOCUMENT_SOURCE_TYPE,
     templateId: null,
     title,
     updatedAt: now,

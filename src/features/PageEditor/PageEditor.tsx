@@ -1,14 +1,19 @@
 'use client';
 
-import { EditorProvider } from '@lobehub/editor/react';
+import { DEFAULT_BLOCK_ANCHOR_PADDING, EditorProvider } from '@lobehub/editor/react';
 import { Flexbox } from '@lobehub/ui';
-import { cssVar } from 'antd-style';
-import type { FC, ReactNode } from 'react';
+import { createStyles, cssVar } from 'antd-style';
+import type { CSSProperties, FC, ReactNode } from 'react';
 import { memo } from 'react';
 
+import { CONVERSATION_MIN_WIDTH } from '@/const/layoutTokens';
 import DiffAllToolbar from '@/features/EditorCanvas/DiffAllToolbar';
+import PageMetaBar from '@/features/PageEditor/PageMetaBar';
 import WideScreenContainer from '@/features/WideScreenContainer';
 import { useRegisterFilesHotkeys } from '@/hooks/useHotkeys';
+import { usePermission } from '@/hooks/usePermission';
+import { useGlobalStore } from '@/store/global';
+import { systemStatusSelectors } from '@/store/global/selectors';
 import { usePageStore } from '@/store/page';
 import { StyleSheet } from '@/utils/styles';
 
@@ -16,7 +21,6 @@ import EditorCanvas from './EditorCanvas';
 import Header from './Header';
 import { PageAgentProvider } from './PageAgentProvider';
 import { PageEditorProvider } from './PageEditorProvider';
-import PageTitle from './PageTitle';
 import RightPanel from './RightPanel';
 import { usePageEditorStore } from './store';
 import TitleSection from './TitleSection';
@@ -32,8 +36,12 @@ import TitleSection from './TitleSection';
  */
 type PageEditorHeader = ReactNode | null;
 
+const WIDE_SCREEN_CONTAINER_PADDING = 16;
+const TABLE_BASE_BLEED = DEFAULT_BLOCK_ANCHOR_PADDING + WIDE_SCREEN_CONTAINER_PADDING;
+
 const styles = StyleSheet.create({
   contentWrapper: {
+    containerType: 'inline-size',
     display: 'flex',
     overflowY: 'auto',
     position: 'relative',
@@ -43,10 +51,27 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   editorContent: {
-    overflowY: 'auto',
+    paddingInline: DEFAULT_BLOCK_ANCHOR_PADDING,
     position: 'relative',
   },
 });
+
+const useTableOverrideStyles = createStyles(({ css }) => ({
+  editorContent: css`
+    .lobe-editor-table-scroll-wrapper.lobe-editor-table-scroll-wrapper {
+      --lobe-block-anchor-padding: var(--lobe-pageeditor-table-bleed-inline);
+
+      position: relative;
+      box-sizing: border-box;
+      width: 100cqi;
+      margin-inline: calc(var(--lobe-pageeditor-table-bleed-inline) * -1);
+    }
+
+    .lobe-editor-table-scroll-wrapper .editor_table {
+      width: max-content;
+    }
+  `,
+}));
 
 interface PageEditorProps {
   emoji?: string;
@@ -74,8 +99,18 @@ interface PageEditorCanvasProps {
 }
 
 const PageEditorCanvas = memo<PageEditorCanvasProps>(({ header, fullWidthHeader }) => {
+  const { allowed: canEdit } = usePermission('edit_own_content');
   const editor = usePageEditorStore((s) => s.editor);
   const documentId = usePageEditorStore((s) => s.documentId);
+  const wideScreen = useGlobalStore(systemStatusSelectors.wideScreen);
+  const { styles: overrideStyles } = useTableOverrideStyles();
+  const tableBleedInline = wideScreen
+    ? `${TABLE_BASE_BLEED}px`
+    : `calc(${TABLE_BASE_BLEED}px + max((100cqi - ${CONVERSATION_MIN_WIDTH}px) / 2, 0px))`;
+  const editorContentStyle = {
+    ...styles.editorContent,
+    '--lobe-pageeditor-table-bleed-inline': tableBleedInline,
+  } as CSSProperties;
 
   // Register Files scope and save document hotkey
   useRegisterFilesHotkeys();
@@ -86,9 +121,17 @@ const PageEditorCanvas = memo<PageEditorCanvasProps>(({ header, fullWidthHeader 
     <Flexbox flex={1} height={'100%'} style={styles.editorContainer}>
       {!fullWidthHeader && headerSlot}
       <Flexbox horizontal height={'100%'} style={styles.contentWrapper} width={'100%'}>
-        <WideScreenContainer wrapperStyle={{ cursor: 'text' }} onClick={() => editor?.focus()}>
-          <Flexbox flex={1} style={styles.editorContent}>
+        <WideScreenContainer
+          wrapperStyle={{ cursor: canEdit ? 'text' : 'not-allowed' }}
+          onClick={() => {
+            if (!canEdit) return;
+
+            editor?.focus();
+          }}
+        >
+          <Flexbox className={overrideStyles.editorContent} flex={1} style={editorContentStyle}>
             <TitleSection />
+            <PageMetaBar />
             <EditorCanvas />
           </Flexbox>
         </WideScreenContainer>
@@ -99,36 +142,26 @@ const PageEditorCanvas = memo<PageEditorCanvasProps>(({ header, fullWidthHeader 
 
   if (fullWidthHeader) {
     return (
-      <>
-        <PageTitle />
-        <Flexbox
-          height={'100%'}
-          style={{ backgroundColor: cssVar.colorBgContainer }}
-          width={'100%'}
-        >
-          {headerSlot}
-          <Flexbox horizontal flex={1} style={{ minHeight: 0 }} width={'100%'}>
-            {editorPane}
-            <RightPanel />
-          </Flexbox>
+      <Flexbox height={'100%'} style={{ backgroundColor: cssVar.colorBgContainer }} width={'100%'}>
+        {headerSlot}
+        <Flexbox horizontal flex={1} style={{ minHeight: 0 }} width={'100%'}>
+          {editorPane}
+          <RightPanel />
         </Flexbox>
-      </>
+      </Flexbox>
     );
   }
 
   return (
-    <>
-      <PageTitle />
-      <Flexbox
-        horizontal
-        height={'100%'}
-        style={{ backgroundColor: cssVar.colorBgContainer }}
-        width={'100%'}
-      >
-        {editorPane}
-        <RightPanel />
-      </Flexbox>
-    </>
+    <Flexbox
+      horizontal
+      height={'100%'}
+      style={{ backgroundColor: cssVar.colorBgContainer }}
+      width={'100%'}
+    >
+      {editorPane}
+      <RightPanel />
+    </Flexbox>
   );
 });
 
@@ -150,6 +183,7 @@ export const PageEditor: FC<PageEditorProps> = ({
   title,
   emoji,
 }) => {
+  const { allowed: canEdit } = usePermission('edit_own_content');
   const deletePage = usePageStore((s) => s.deletePage);
 
   return (
@@ -161,11 +195,27 @@ export const PageEditor: FC<PageEditorProps> = ({
           pageId={pageId}
           title={title}
           onBack={onBack}
-          onDelete={() => deletePage(pageId || '')}
           onDocumentIdChange={onDocumentIdChange}
-          onEmojiChange={onEmojiChange}
-          onSave={onSave}
-          onTitleChange={onTitleChange}
+          onDelete={() => {
+            if (!canEdit) return;
+
+            deletePage(pageId || '');
+          }}
+          onEmojiChange={(emoji) => {
+            if (!canEdit) return;
+
+            onEmojiChange?.(emoji);
+          }}
+          onSave={() => {
+            if (!canEdit) return;
+
+            onSave?.();
+          }}
+          onTitleChange={(nextTitle) => {
+            if (!canEdit) return;
+
+            onTitleChange?.(nextTitle);
+          }}
         >
           <PageEditorCanvas fullWidthHeader={fullWidthHeader} header={header} />
         </PageEditorProvider>

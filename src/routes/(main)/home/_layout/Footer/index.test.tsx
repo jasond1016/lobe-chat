@@ -114,7 +114,12 @@ const renderFooter = async ({
     useAnalytics: createAnalyticsApi,
   }));
   vi.doMock('@/components/ChangelogModal', () => ({
-    default: () => null,
+    default: vi.fn(),
+    openChangelogModal: vi.fn(),
+  }));
+  vi.doMock('@/components/FeedbackModal', () => ({
+    default: vi.fn(),
+    openFeedbackModal: vi.fn(),
   }));
   vi.doMock('@/components/HighlightNotification', () => ({
     default: (props: {
@@ -147,14 +152,8 @@ const renderFooter = async ({
         </div>
       ) : null,
   }));
-  vi.doMock('@/features/User/UserPanel/ThemeButton', () => ({
+  vi.doMock('@/features/User/AccountPanel/AccountTrigger', () => ({
     default: () => null,
-  }));
-  function createFeedbackModalApi() {
-    return { open: vi.fn() };
-  }
-  vi.doMock('@/hooks/useFeedbackModal', () => ({
-    useFeedbackModal: createFeedbackModalApi,
   }));
   function createNavLayoutState() {
     return {
@@ -213,9 +212,9 @@ afterEach(() => {
   vi.doUnmock('@lobechat/const');
   vi.doUnmock('@lobehub/analytics/react');
   vi.doUnmock('@/components/ChangelogModal');
+  vi.doUnmock('@/components/FeedbackModal');
   vi.doUnmock('@/components/HighlightNotification');
-  vi.doUnmock('@/features/User/UserPanel/ThemeButton');
-  vi.doUnmock('@/hooks/useFeedbackModal');
+  vi.doUnmock('@/features/User/AccountPanel/AccountTrigger');
   vi.doUnmock('@/hooks/useNavLayout');
   vi.doUnmock('@/store/global');
   vi.doUnmock('@/store/serverConfig');

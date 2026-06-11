@@ -19,6 +19,7 @@ import { AgentRuntimeError } from '../../utils/createError';
 import { debugResponse, debugStream } from '../../utils/debugStream';
 import { getModelPricing } from '../../utils/getModelPricing';
 import { StreamingResponse } from '../../utils/response';
+import { assertToolLimits } from '../../utils/validateToolLimits';
 
 const COPILOT_BASE_URL = 'https://api.githubcopilot.com';
 const TOKEN_EXCHANGE_URL = 'https://api.github.com/copilot_internal/v2/token';
@@ -166,6 +167,15 @@ export class LobeGithubCopilotAI implements LobeRuntimeAI {
   }
 
   async chat(payload: ChatStreamPayload, options?: ChatMethodOptions) {
+    // Pre-flight: abort before dispatching if tools exceed the Copilot 128-tool limit
+    if (payload.tools && payload.tools.length > 0) {
+      assertToolLimits({
+        model: payload.model,
+        provider: ModelProvider.GithubCopilot,
+        tools: payload.tools,
+      });
+    }
+
     return this.executeWithRetry(async () => {
       const inputStartAt = Date.now();
 
@@ -261,6 +271,7 @@ export class LobeGithubCopilotAI implements LobeRuntimeAI {
           reasoning,
           max_tokens,
           verbosity,
+          preserveThinking: _pt,
           ...responseRest
         } = rest as any;
 
@@ -340,7 +351,7 @@ export class LobeGithubCopilotAI implements LobeRuntimeAI {
         );
       }
 
-      const { apiMode: _, ...cleanedRest } = rest as any;
+      const { apiMode: _, preserveThinking: _pt, ...cleanedRest } = rest as any;
       const messages = await convertOpenAIMessages(cleanedRest.messages as any, {
         forceImageBase64: true,
       });
