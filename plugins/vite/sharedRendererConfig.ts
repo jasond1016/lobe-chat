@@ -127,7 +127,6 @@ function sharedManualChunks(id: string): string | undefined {
     isNodePackage(id, 'react') ||
     isNodePackage(id, 'react-dom') ||
     isNodePackage(id, 'react-router') ||
-    isNodePackage(id, 'react-router-dom') ||
     isNodePackage(id, 'scheduler')
   ) {
     return 'vendor-react';
@@ -243,6 +242,7 @@ export function sharedRendererDefine(options: { isElectron: boolean; isMobile: b
     '__DEV__': process.env.NODE_ENV !== 'production' ? 'true' : 'false',
     '__ELECTRON__': JSON.stringify(options.isElectron),
     '__MOBILE__': JSON.stringify(options.isMobile),
+    '__REACT_SCAN__': process.env.REACT_SCAN === 'true' ? 'true' : 'false',
     '__TEST__': 'false',
     ...nextPublicDefine,
     // Keep a safe fallback so generic `process.env` access won't crash in browser runtime.
@@ -255,7 +255,8 @@ export const sharedOptimizeDeps = {
     'react',
     'react-dom',
     'react-dom/client',
-    'react-router-dom',
+    'react-router',
+    'react-router/dom',
     'antd',
     '@ant-design/icons',
     '@lobehub/ui',
