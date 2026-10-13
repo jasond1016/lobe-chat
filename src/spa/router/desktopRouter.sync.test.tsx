@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { ReactElement } from 'react';
+import { isValidElement, type ReactElement, Suspense } from 'react';
 import type { RouteObject } from 'react-router';
 import { matchRoutes } from 'react-router';
 import { describe, expect, it, vi } from 'vitest';
@@ -10,6 +10,7 @@ import BrandTextLoading from '@/components/Loading/BrandTextLoading';
 import AppsSkeleton from '@/components/Skeleton/Apps';
 import ConversationLayoutSkeleton from '@/components/Skeleton/Conversation/Layout';
 import ConversationSegmentSkeleton from '@/components/Skeleton/Conversation/Segment';
+import DelayedFallback from '@/components/Skeleton/Delayed';
 import GoalSkeleton from '@/components/Skeleton/Goal';
 import GoalDetailSkeleton from '@/components/Skeleton/GoalDetail';
 import MemorySkeleton from '@/components/Skeleton/Memory';
@@ -19,6 +20,7 @@ import RouteSegmentSkeleton from '@/components/Skeleton/RouteSegment';
 import SettingsPageSkeleton from '@/components/Skeleton/Settings/Page';
 import TasksSkeleton from '@/components/Skeleton/Tasks';
 import TopicsSkeleton from '@/components/Skeleton/Topics';
+import TaskDetailSkeleton from '@/features/AgentTasks/AgentTaskDetail/TaskDetailSkeleton';
 import { WORKSPACE_SETTINGS_TABS } from '@/features/Workspace/workspaceAwarePath';
 import AppShellSkeleton from '@/spa/BootShell/AppShellSkeleton';
 import { createTabRouter } from '@/spa/router/tabRouter';
@@ -281,11 +283,12 @@ describe('desktop router shared definition', () => {
     // `/share/*` moved to the standalone Share app (apps/share).
     expect(webPaths).not.toContain('/share/t');
     expect(webPaths).not.toContain('/share/page');
-    // …and the agent-share visitor surface moved to `/agent/:aid`, so the old
-    // pattern stays registered on every platform only to redirect legacy links
-    // (Web, Electron, and the mobile router — see mobileRouter.test.tsx).
-    expect(webPaths).toContain('/share/agent/:slugOrId');
-    expect(electronPaths).toContain('/share/agent/:slugOrId');
+    // …and the agent-share visitor surface is no longer defined here: it runs
+    // a visitor's conversation on the creator's account, so it ships with the
+    // deployment that does that accounting and registers itself through
+    // `BusinessDesktopRoutesWithoutMainLayout`.
+    expect(webPaths).not.toContain('/a/:slugOrId/:topicId?');
+    expect(electronPaths).not.toContain('/a/:slugOrId/:topicId?');
     expect(webPaths).not.toContain('/verify');
     expect(webPaths).toContain('/acceptance');
     expect(webPaths).toContain('/onboarding');
@@ -313,12 +316,21 @@ describe('desktop router shared definition', () => {
   // Suspense, which always beats an outlet-level boundary — so without the
   // rewrite the brand wordmark reappears inside the container for 1–2s on a
   // cold deep link, right after the boot shell hands over.
+  // Page-level fallbacks sit behind the 200ms gate, so the skeleton under test
+  // is the gate's child rather than the fallback element itself.
+  const fallbackType = (fallback?: ReactElement): unknown => {
+    if (!fallback) return undefined;
+    if (fallback.type !== DelayedFallback) return fallback.type;
+
+    return (fallback.props as { children: ReactElement }).children.type;
+  };
+
   const collectFallbacks = (list: RouteObject[]): unknown[] => {
     const fallbacks: unknown[] = [];
     const walk = (routes: RouteObject[]) => {
       for (const route of routes) {
         const element = route.element as ReactElement<{ fallback?: ReactElement }> | undefined;
-        if (element?.props?.fallback) fallbacks.push(element.props.fallback.type);
+        if (element?.props?.fallback) fallbacks.push(fallbackType(element.props.fallback));
         if (route.children) walk(route.children);
       }
     };
@@ -359,10 +371,11 @@ describe('desktop router shared definition', () => {
       ] as const) {
         const matches = matchRoutes(createRuntimeRoutes(pathname), pathname);
         const fallbackTypes = matches
-          ?.map(
-            ({ route }) =>
+          ?.map(({ route }) =>
+            fallbackType(
               (route.element as ReactElement<{ fallback?: ReactElement }> | undefined)?.props
-                .fallback?.type,
+                .fallback,
+            ),
           )
           .filter(Boolean);
 
@@ -374,12 +387,35 @@ describe('desktop router shared definition', () => {
   );
 
   it.each([
+    ['Web', () => webDesktopRoutes.find((route) => route.path === '/')?.children ?? []],
+    ['Electron', () => createTabRouter('/').routes[0]?.children ?? []],
+  ])('%s declares a skeleton on every lazy main-area page', (_, getRoutes) => {
+    const undeclared: string[] = [];
+    const walk = (routes: RouteObject[], base: string, chain: RouteObject[]) => {
+      for (const route of routes) {
+        const pathname = route.index ? `${base}/(index)` : `${base}/${route.path ?? ''}`;
+        const nextChain = [...chain, route];
+        if (route.children?.length) {
+          walk(route.children, route.index ? base : pathname, nextChain);
+          continue;
+        }
+        const isLazyPage = isValidElement(route.element) && route.element.type === Suspense;
+        if (isLazyPage && !resolveRouteSkeleton(nextChain)) undeclared.push(pathname);
+      }
+    };
+    walk(getRoutes(), '', []);
+
+    expect(undeclared).toEqual([]);
+  });
+
+  it.each([
     ['Web', (_pathname: string) => webDesktopRoutes],
     ['Electron', (pathname: string) => createTabRouter(pathname).routes],
   ])('%s resolves specialized skeletons from the deepest route meta', (_, getRoutes) => {
     for (const [pathname, expectedSkeleton] of [
       ['/agent/agent-1/topics', TopicsSkeleton],
       ['/agent/agent-1/tasks', TasksSkeleton],
+      ['/agent/agent-1/task/task-1', TaskDetailSkeleton],
       ['/agent/agent-1/goals', GoalSkeleton],
       ['/agent/agent-1/goal/goal-1', GoalDetailSkeleton],
       ['/agent/agent-1/profile', ProfileSkeleton],
@@ -505,8 +541,6 @@ describe('desktop router shared definition', () => {
     (_, factory) => {
       const matches = matchRoutes(createMainAreaRoutes(factory), '/agent/agt_1');
 
-      // The agent-share visitor page now shares this route; the branch is
-      // decided by `AgentRouteSwitch`, not by a second route pattern.
       expect(matches?.some((match) => match.route.path === ':aid')).toBe(true);
       expect(matches?.at(-1)?.params).toMatchObject({ aid: 'agt_1' });
     },
@@ -515,12 +549,11 @@ describe('desktop router shared definition', () => {
   it.each([
     ['Web', webDesktopRoutes],
     ['Electron', electronDesktopRoutes],
-  ])('%s redirects legacy /share/agent links to /agent', (_, routes) => {
-    const matches = matchRoutes(routes, '/share/agent/my-bot');
-    const element = matches?.at(-1)?.route.element as ReactElement;
-
-    expect(matches?.at(-1)?.params).toMatchObject({ slugOrId: 'my-bot' });
-    expect((element.type as { displayName?: string }).displayName).toBe('AgentShareLegacyRedirect');
+  ])('%s leaves the agent-share visitor surface to the business routes', (_, routes) => {
+    // The open-source tree no longer defines `/a/*`; a deployment that offers
+    // agent sharing contributes it through the business slot, so the path
+    // falls through to not-found here.
+    expect(matchRoutes(routes, '/a/my-bot')?.at(-1)?.route.path).toBe('*');
   });
 
   it('keeps business resource and task routes in the shared definition', async () => {

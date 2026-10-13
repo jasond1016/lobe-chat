@@ -1,3 +1,8 @@
+import {
+  DEVICE_OFFLINE_RUN_STATUS,
+  QUOTA_LIMITED_RUN_STATUS,
+  TRANSIENT_FAILED_RUN_STATUS,
+} from '@lobechat/const/goal';
 import type { BriefDecision, TaskTopicHandoff } from '@lobechat/types';
 import { and, count, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 
@@ -7,7 +12,15 @@ import { topics } from '../schemas/topic';
 import type { LobeChatDatabase } from '../type';
 import { buildWorkspaceWhere } from '../utils/workspace';
 
-const TERMINAL_TOPIC_STATUSES = new Set(['canceled', 'completed', 'failed', 'timeout']);
+export const TERMINAL_TOPIC_STATUSES = new Set([
+  'canceled',
+  'completed',
+  DEVICE_OFFLINE_RUN_STATUS,
+  'failed',
+  QUOTA_LIMITED_RUN_STATUS,
+  'timeout',
+  TRANSIENT_FAILED_RUN_STATUS,
+]);
 
 export class TaskTopicModel {
   private readonly userId: string;
@@ -45,7 +58,7 @@ export class TaskTopicModel {
    * stamp `topics.completedAt` so duration can be computed at read time, and
    * promote `topics.status` to 'completed' on a clean finish.
    */
-  private async markTopicEnded(topicId: string, status: string): Promise<void> {
+  async markTopicEnded(topicId: string, status: string): Promise<void> {
     const setClause: { completedAt: Date; status?: 'completed' } = { completedAt: new Date() };
     if (status === 'completed') setClause.status = 'completed';
 
@@ -117,6 +130,34 @@ export class TaskTopicModel {
     const updated = result.length > 0;
     if (updated) await this.markTopicEnded(topicId, 'canceled');
     return updated;
+  }
+
+  /**
+   * Cancel every still-running topic under the given tasks in one statement,
+   * returning the rows that were actually flipped. Used by the family status
+   * cascade so a topic that started after the caller's snapshot is still
+   * marked canceled inside the same transaction as the status update.
+   */
+  async cancelRunningByTaskIds(taskIds: string[]): Promise<TaskTopicItem[]> {
+    if (taskIds.length === 0) return [];
+
+    const canceled = await this.db
+      .update(taskTopics)
+      .set({ status: 'canceled' })
+      .where(
+        and(
+          inArray(taskTopics.taskId, taskIds),
+          eq(taskTopics.status, 'running'),
+          this.ownership(),
+        ),
+      )
+      .returning();
+
+    for (const topic of canceled) {
+      if (topic.topicId) await this.markTopicEnded(topic.topicId, 'canceled');
+    }
+
+    return canceled;
   }
 
   async updateOperationId(taskId: string, topicId: string, operationId?: string): Promise<void> {
@@ -205,6 +246,69 @@ export class TaskTopicModel {
     );
 
     return result.length;
+  }
+
+  /**
+   * Flip one run out of `running` — but only while it is still that exact run.
+   *
+   * Unlike {@link updateStatus}, a miss is a real answer rather than a silent
+   * no-op: a row a newer operation has already replaced, or one another writer
+   * settled a moment ago, returns `false`. Only the run row is written; the
+   * topic's end stamp is the caller's to commit alongside it — see
+   * `TaskRunClaimRepo`.
+   */
+  async claimRunIfRunning(topicId: string, operationId: string, status: string): Promise<boolean> {
+    const result = await this.db
+      .update(taskTopics)
+      .set({ status })
+      .where(
+        and(
+          eq(taskTopics.topicId, topicId),
+          eq(taskTopics.operationId, operationId),
+          eq(taskTopics.status, 'running'),
+          this.ownership(),
+        ),
+      )
+      .returning({ topicId: taskTopics.topicId });
+
+    return result.length > 0;
+  }
+
+  /**
+   * Put a run claimed by {@link claimRunIfRunning} back to `running`.
+   *
+   * Keyed on the same operation as the claim, so a newer run that took the row
+   * over in between is never reopened. Only the run row is written; clearing the
+   * topic's end stamp is the caller's — see `TaskRunClaimRepo`.
+   */
+  async reopenRun(topicId: string, operationId: string, fromStatus: string): Promise<boolean> {
+    const result = await this.db
+      .update(taskTopics)
+      .set({ status: 'running' })
+      .where(
+        and(
+          eq(taskTopics.topicId, topicId),
+          eq(taskTopics.operationId, operationId),
+          eq(taskTopics.status, fromStatus),
+          this.ownership(),
+        ),
+      )
+      .returning({ topicId: taskTopics.topicId });
+
+    return result.length > 0;
+  }
+
+  /** Undo {@link markTopicEnded}'s end stamp for a run that is live again. */
+  async clearTopicEnded(topicId: string): Promise<void> {
+    await this.db
+      .update(topics)
+      .set({ completedAt: null })
+      .where(
+        and(
+          eq(topics.id, topicId),
+          buildWorkspaceWhere({ userId: this.userId, workspaceId: this.workspaceId }, topics),
+        ),
+      );
   }
 
   async findByTopicId(topicId: string): Promise<TaskTopicItem | null> {
@@ -312,6 +416,55 @@ export class TaskTopicModel {
       .where(and(eq(taskTopics.taskId, taskId), this.ownership()))
       .orderBy(desc(taskTopics.seq))
       .limit(limit);
+  }
+
+  /**
+   * A goal's spend and round count in one aggregate: how many runs those tasks
+   * produced and what they cost.
+   *
+   * The Goal page renders these numbers and the coordinator enforces the budget
+   * against them, so both read them from here — a second definition of "what
+   * this goal has spent" would let the header disagree with the move that
+   * parks the goal on `budget_exhausted`.
+   *
+   * `topics.totalCost` is NULL for a run that has not settled yet; those count
+   * as a round but contribute nothing to the sum.
+   */
+  async sumRunCostByTaskIds(taskIds: string[]): Promise<{
+    byTask: { runs: number; taskId: string; totalCost: number; totalTokens: number }[];
+    runs: number;
+    totalCost: number;
+    totalTokens: number;
+  }> {
+    if (taskIds.length === 0) return { byTask: [], runs: 0, totalCost: 0, totalTokens: 0 };
+
+    // Grouped once, then folded — one round trip serves both the enforced
+    // total and the per-Task breakdown the cost panel lists.
+    const rows = await this.db
+      .select({
+        runs: count(),
+        taskId: taskTopics.taskId,
+        totalCost: sql<string>`coalesce(sum(${topics.totalCost}), 0)`,
+        totalTokens: sql<string>`coalesce(sum(${topics.totalTokens}), 0)`,
+      })
+      .from(taskTopics)
+      .leftJoin(topics, eq(taskTopics.topicId, topics.id))
+      .where(and(inArray(taskTopics.taskId, taskIds), this.ownership()))
+      .groupBy(taskTopics.taskId);
+
+    const byTask = rows.map((row) => ({
+      runs: row.runs,
+      taskId: row.taskId,
+      totalCost: Number(row.totalCost ?? 0),
+      totalTokens: Number(row.totalTokens ?? 0),
+    }));
+
+    return {
+      byTask,
+      runs: byTask.reduce((sum, row) => sum + row.runs, 0),
+      totalCost: byTask.reduce((sum, row) => sum + row.totalCost, 0),
+      totalTokens: byTask.reduce((sum, row) => sum + row.totalTokens, 0),
+    };
   }
 
   async findWithHandoffByTaskIds(taskIds: string[], limit: number) {

@@ -1,6 +1,6 @@
 ---
 name: split-micro-app
-description: 'Use when splitting a monorepo surface into a standalone micro app (React Router SSR on Cloudflare Workers), splitting a surface whose rendering code lives in the lobehub-cloud business overlay, fighting SSR bundle bloat from main-src imports, deploying its assets to CDN/R2, adding SEO/OG meta to an SSR page, adding a target and route rules for it in the lobehub gateway (torii), setting up PR preview uploads on a sibling -preview Worker so the production script keeps its Cloudflare rollback window, wiring it into the OSS Docker image, or deciding whether Cloud Next should still build or rewrite it.'
+description: 'Use for standalone micro apps: React Router SSR/SSG, Cloud overlays, Workers, CDN/R2, SEO/OG, gateway routes, previews, Docker integration and SSR bundle isolation.'
 user-invocable: false
 ---
 
@@ -87,7 +87,7 @@ tsconfig `include` must cover `app/`). Stack: `@react-router/dev@8` + `@cloudfla
 | Client-shim lambda            | Client `@/libs/trpc/client` is a cookie-only `httpLink` (`trpcClient.client.ts`). Do not ship the real `lambda.ts` — its `headers()` pulls image store → chat store + `model-bank` catalog.                                                                                                                                                                                                                                                                                                                        |
 | SSR-stub shiki langs          | On the SSR env, resolve `@shikijs/langs` / `@shikijs/themes` / shiki's `langs-bundle` / `themes` / wasm to `app/stubs/shiki.ts`. Do **not** stub the `shiki` package entry — Pierre diffs and Highlighter import named APIs from it.                                                                                                                                                                                                                                                                               |
 | Client shiki from CDN         | On the client env, resolve `shiki` / `shiki/*` / `@shikijs/*` to pinned `https://esm.sh/...@<installed shiki version>` as externals. Do not bundle grammars or wasm into `build/client`.                                                                                                                                                                                                                                                                                                                           |
-| Slot-inject app-only features | Context seam owned by the shared feature (see `src/features/Acceptance/Viewer/originConversation.tsx`); app provides, micro app leaves null → affordances hide                                                                                                                                                                                                                                                                                                                                                     |
+| Slot-inject app-only features | Context seam owned by the shared feature (see `src/features/Acceptance/Viewer/Conversation/originConversation.tsx`); app provides, micro app leaves null → affordances hide                                                                                                                                                                                                                                                                                                                                        |
 | Bypass barrels                | Deep-path imports (`@/features/Acceptance/Acceptance`, not the barrel) — barrels evaluate sibling exports with side effects                                                                                                                                                                                                                                                                                                                                                                                        |
 | Compose capability atoms      | Shared UI is assembled per surface; the light app never imports the fat viewer. See **`compose-atoms`**. Do not add `readOnly` on the in-app page                                                                                                                                                                                                                                                                                                                                                                  |
 | Decouple dual-use components  | Lift store reads to optional props (see AudioPlayer `uploadState`/`onCancelUpload`)                                                                                                                                                                                                                                                                                                                                                                                                                                |
@@ -108,6 +108,14 @@ tsconfig, glob dirs). New `import.meta.glob` patterns in shared code need a new 
 the one manual rule. See `apps/workbench/scripts/should-build.mjs` +
 `.github/workflows/deploy-workbench.yml`; the overlay-hosted variant is lobehub-cloud's
 `scripts/shouldBuildShare.ts` + `.github/workflows/deploy-share.yml` (§1b).
+
+The manifest is only a pre-filter: it lists every module the build loaded, so type-only files,
+barrels and tree-shaken code trigger builds too. The deploy decision is the **output hash**
+(`scripts/workerOutputHash.ts`): the build is deterministic (comment-only edits hash
+identically), so `deploy.ts` hashes `build/`, compares it with the `output-hash.txt` carried in
+the same artifact, and skips upload + `wrangler deploy` when equal — keeping Cloudflare's
+100-version rollback window for real releases. Manual dispatch passes no previous hash and
+always deploys. Workbench has it; share does not yet.
 
 **PR-time verify is a separate workflow per repo that can change the artifact** — deploy
 ownership (§1b) does not decide verify ownership. Each verify builds the worker, uploads a

@@ -46,6 +46,8 @@ class TaskService {
     }>;
     parentTaskId?: string | null;
     projectId?: string;
+    /** "My tasks" narrowing: assigned to the caller, or created by them. */
+    scope?: 'assigned' | 'created';
     visibility?: 'private' | 'public';
   }) =>
     lambdaClient.task.groupList.query({
@@ -120,11 +122,19 @@ class TaskService {
   update = async (
     id: string,
     data: {
+      /**
+       * The agent making this change when the task tool runs in the browser
+       * (client-first runtime). Attribution only — the server verifies the
+       * caller can use that agent before recording it.
+       */
+      actorAgentId?: string;
       assigneeAgentId?: string | null;
       assigneeUserId?: string | null;
       // Automation mode; null = no automation
       automationMode?: TaskAutomationMode | null;
       config?: Record<string, unknown>;
+      /** Deep-merged into `config` server-side under the row lock (vs. `config`, which replaces). */
+      configPatch?: Record<string, unknown>;
       context?: Record<string, unknown>;
       description?: string;
       editorData?: unknown;
@@ -147,8 +157,21 @@ class TaskService {
 
   clearAll = async () => lambdaClient.task.clearAll.mutate();
 
-  updateStatus = async (id: string, status: TaskStatus, error?: string) =>
-    lambdaClient.task.updateStatus.mutate({ error, id, status });
+  updateStatus = async (
+    id: string,
+    status: TaskStatus,
+    error?: string,
+    options?: { actorAgentId?: string },
+  ) =>
+    lambdaClient.task.updateStatus.mutate({
+      actorAgentId: options?.actorAgentId,
+      error,
+      id,
+      status,
+    });
+
+  updateStatusCascade = async (id: string, status: 'canceled' | 'completed') =>
+    lambdaClient.task.updateStatusCascade.mutate({ id, status });
 
   run = async (id: string, params?: { continueTopicId?: string; prompt?: string }) =>
     lambdaClient.task.run.mutate({ id, ...params });

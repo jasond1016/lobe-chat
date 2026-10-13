@@ -1,7 +1,9 @@
+import type { AiModelReasoningConfig } from 'model-bank';
+import { AiModelReasoningConfigSchema } from 'model-bank/aiModel';
 import { z } from 'zod';
 
+import type { HeterogeneousReasoningEffort } from '../agent/heteroSelectorCapabilities';
 import type { SerializedAgentHook } from '../agentHook';
-import { serializedAgentHookSchema } from '../agentHook';
 import type { WorkingDirConfig } from '../device';
 import { workingDirConfigSchema } from '../device';
 import type { BaseDataModel } from '../meta';
@@ -118,6 +120,7 @@ export interface ChatTopicMetadata {
     summarizedAt: string;
     version: number;
   };
+
   bot?: ChatTopicBotContext;
   boundDeviceId?: string;
   cronJobId?: string;
@@ -153,6 +156,15 @@ export interface ChatTopicMetadata {
    * Updated on every step boundary.
    */
   heteroCurrentMsgId?: { msgId: string; operationId: string };
+  /**
+   * Topic-pinned reasoning effort for a heterogeneous agent (Claude Code /
+   * Codex / …). Snapshotted from `agencyConfig.heterogeneousProvider.effort`
+   * when the topic is created and overwritten when the user picks an effort
+   * while the topic is active, so a single session can run at a higher effort
+   * without retuning the agent. Resolved as "topic effort if present, else the
+   * agent's effort" by `applyTopicModelToHeterogeneousProvider`.
+   */
+  heteroEffort?: HeterogeneousReasoningEffort;
   /**
    * Secret-free identity of the provider/auth binding that created
    * `heteroSessionId`. Resume is allowed only when this identity still matches.
@@ -217,6 +229,18 @@ export interface ChatTopicMetadata {
   /** Measured dominant provider by token volume — see {@link ChatTopicMetadata.model}. */
   provider?: string;
   /**
+   * Topic-pinned reasoning effort / mode for the pinned API model
+   * (`ChatTopic.model`). Mirrors the model pin: snapshotted from the user's
+   * model-instance reasoning config when the topic is created, re-snapshotted
+   * for the new model when the user switches model while the topic is active,
+   * and overwritten when the user picks an effort while the topic is active.
+   * Generation resolves "topic config if present (and its pinned model matches
+   * the run model), else the user-level model-instance config" — see
+   * `resolveEffectiveReasoningChatConfig`. An empty object is a valid snapshot:
+   * it pins the topic to the model's own defaults.
+   */
+  reasoningConfig?: AiModelReasoningConfig;
+  /**
    * Web (cloud) only. Ordered list of GitHub repos selected for this topic.
    * Each repo will be cloned into the Gateway sandbox before execution.
    * `workingDirectory` is kept in sync with repos[0] (the primary repo).
@@ -279,6 +303,57 @@ export interface ChatTopicMetadata {
     startedAt?: string;
     threadId?: string | null;
   } | null;
+  /**
+   * When the current run claimed this topic, as an ISO string. Stamped by the
+   * server whenever a status write moves the topic into `running` (see
+   * `TopicModel.update`), and read back only while the topic still is — a
+   * leftover stamp under a finished topic means nothing.
+   *
+   * Exists for runs the server doesn't execute: a desktop heterogeneous CLI or
+   * in-browser runtime writes no `agent_operations` row, so without this the
+   * topic list has no start time to run an elapsed clock from. Server-executed
+   * runs keep using their operation row, which is the more faithful record.
+   */
+  runStartedAt?: string;
+  /**
+   * Which CLOUD-SANDBOX INSTANCE this topic runs in: one instance of an
+   * environment, meaning a directory inside the persistent workspace together
+   * with the packages restored into it. Absent means the workspace root under
+   * the caller's default environment, which is what a topic that never chose
+   * gets and what a topic keeps if its instance is later deleted.
+   *
+   * Two conversations that must not overwrite each other's files take two
+   * instances of one environment rather than two directories under one, because
+   * what was installed follows the directory — separating them at the directory
+   * alone would leave both sharing, and overwriting, the same captured state.
+   *
+   * A preference, not a security boundary: the directory it resolves to is
+   * composed onto the workspace the signed entitlement names and fenced there,
+   * so a value pointing outside is rejected by the execution plane rather than
+   * trusted here. Ignored entirely when the run has no persistent workspace,
+   * which is why it survives a downgrade — resubscribing puts the conversation
+   * back where it was.
+   *
+   * Fixed for the life of a session — the execution plane binds the session on
+   * its first call and refuses a snapshot under a different name — so a change
+   * takes effect the next time the sandbox starts.
+   *
+   * The desktop counterpart is {@link ChatTopicMetadata.workingDirectory}; the
+   * two never interact, one addresses the user's machine and the other a
+   * directory inside a remote volume.
+   */
+  sandboxInstanceId?: string;
+  /**
+   * Whether this topic's cloud sandbox should persist its working directory.
+   * Absent means ephemeral — persistence is an explicit choice, since not every
+   * task wants to leave files behind. Mirrors `SandboxMode` in
+   * `@lobechat/builtin-tool-cloud-sandbox`, inlined to keep this package free of
+   * a dependency on the tool layer.
+   *
+   * Only half the decision: a run is persistent when this says so AND the
+   * caller's entitlement grants a workspace.
+   */
+  sandboxMode?: 'ephemeral' | 'persistent';
   /**
    * A deferred agent run on this topic. Present iff the topic status is
    * `scheduled`. Set to `null` to clear it (same clear-convention as
@@ -471,9 +546,11 @@ export const parseTopicScheduledRun = (raw: unknown): TopicScheduledRun | null =
   };
 };
 
-/** Metadata patch accepted by the topic update API. */
 export const chatTopicMetadataUpdateSchema = z.object({
   boundDeviceId: z.string().optional(),
+  heteroEffort: z
+    .custom<HeterogeneousReasoningEffort>((value) => typeof value === 'string')
+    .optional(),
   heteroSessionBindingKey: z.string().optional(),
   heteroSessionBindingKeyByWorkingDirectory: z.record(z.string(), z.string()).optional(),
   heteroSessionId: z.string().optional(),
@@ -513,38 +590,10 @@ export const chatTopicMetadataUpdateSchema = z.object({
     .optional(),
   provider: z.string().optional(),
   lastSettledOperationId: z.string().optional(),
+  reasoningConfig: AiModelReasoningConfigSchema.optional(),
   repos: z.array(z.string()).optional(),
-  runningOperation: z
-    .object({
-      assistantMessageId: z.string(),
-      childOperations: z
-        .array(
-          z.object({
-            assistantMessageId: z.string(),
-            deviceId: z.string().optional(),
-            deviceUserId: z.string().optional(),
-            deviceWorkspaceId: z.string().optional(),
-            heteroType: z.string().nullable().optional(),
-            hooks: z.array(serializedAgentHookSchema).optional(),
-            operationId: z.string(),
-            orchestrationRole: z.enum(['supervisor', 'member']).optional(),
-            scope: z.string().optional(),
-            threadId: z.string().nullish(),
-          }),
-        )
-        .optional(),
-      deviceId: z.string().optional(),
-      deviceUserId: z.string().optional(),
-      deviceWorkspaceId: z.string().optional(),
-      heteroType: z.string().nullable().optional(),
-      hooks: z.array(serializedAgentHookSchema).optional(),
-      operationId: z.string(),
-      orchestrationRole: z.enum(['supervisor', 'member']).optional(),
-      scope: z.string().optional(),
-      threadId: z.string().nullish(),
-    })
-    .nullable()
-    .optional(),
+  // Runtime state and hooks are server-owned; clients may only clear a stale marker.
+  runningOperation: z.null().optional(),
   taskCallbackReservation: z
     .object({
       messageId: z.string(),
@@ -552,9 +601,34 @@ export const chatTopicMetadataUpdateSchema = z.object({
     })
     .nullable()
     .optional(),
+  // The topic's own sandbox choices: where it works, which instance it works in,
+  // and whether anything survives. Client-writable on purpose — the execution
+  // plane fences all three against the entitlement it was issued, so they are
+  // preferences rather than boundaries (see `TopicMetadata.sandboxCwd`).
+  //
+  // A key absent here is not rejected, it is silently dropped: this is a plain
+  // `z.object()`, and stripping unknown keys is its default. So a field that
+  // lives only on `ChatTopicMetadata` writes nothing and still answers 200 —
+  // the interface and this schema are two declarations the type checker never
+  // compares.
+  sandboxCwd: z.string().optional(),
+  sandboxInstanceId: z.string().optional(),
+  sandboxMode: z.enum(['ephemeral', 'persistent']).optional(),
   scheduledRun: topicScheduledRunSchema.nullish(),
   workingDirectory: z.string().optional(),
   workingDirectoryConfig: workingDirConfigSchema.optional(),
+});
+
+/** Public topic metadata patch, distinct from the full persisted metadata. */
+export type UpdateTopicMetadataInput = z.input<typeof chatTopicMetadataUpdateSchema>;
+
+/**
+ * Metadata a client may seed when creating a topic: the pinned reasoning
+ * snapshot taken alongside the pinned model (see `snapshotAgentModel`).
+ */
+export const chatTopicCreateMetadataSchema = chatTopicMetadataUpdateSchema.pick({
+  heteroEffort: true,
+  reasoningConfig: true,
 });
 
 export interface ChatTopicSummary {
@@ -609,7 +683,18 @@ export interface ChatTopic extends Omit<BaseDataModel, 'meta'> {
    * `metadata.model` (measured dominant model from the usage roll-up).
    */
   model?: string | null;
+  projectId?: string | null;
+  projectWorkingDirectoryId?: string | null;
   provider?: string | null;
+  /**
+   * Start time of the topic's current run — the latest top-level running
+   * `agent_operations.startedAt`, only set while `status === 'running'` and
+   * null otherwise. Present on list queries that select the column (per-agent
+   * / group sidebar lists, the queryTopics feed); absent on slim projections.
+   * Lets lists show live elapsed time for runs that have no local operation
+   * (e.g. after a page refresh, where only the active topic is reconnected).
+   */
+  runStartedAt?: Date | string | number | null;
   sessionId?: string;
   /**
    * Sort key for the sidebar list: the topic's latest message-activity time

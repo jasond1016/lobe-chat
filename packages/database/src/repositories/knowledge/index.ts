@@ -1,4 +1,5 @@
 import {
+  AGENT_ARTIFACT_SOURCE_TYPES,
   CUSTOM_DOCUMENT_FILE_TYPE,
   CUSTOM_FOLDER_FILE_TYPE,
   MARKDOWN_MIME_TYPES,
@@ -35,6 +36,7 @@ import { FileModel } from '../../models/file';
 import { DOCUMENT_FOLDER_TYPE, documents, files, knowledgeBaseFiles, users } from '../../schemas';
 import type { LobeChatDatabase } from '../../type';
 import { buildDocumentCategoryFilter, buildFileCategoryFilter } from '../../utils/fileTypeCategory';
+import { notAgentShareFile } from '../../utils/fileVisibility';
 import { buildWorkspaceWhere } from '../../utils/workspace';
 
 /**
@@ -322,13 +324,10 @@ export class KnowledgeRepo {
 
   /**
    * Scope predicate every file listing shares: ownership plus the exclusion of
-   * sources that belong to another surface (acceptance evidence). Kept as one
-   * helper so a new listing can't accidentally pick up ownership alone and
-   * start leaking hundreds of verification artifacts back into the library.
+   * acceptance evidence by source and visitor attachments by provenance.
    *
-   * `sourceFilter` is the only opt-out: asking for `acceptance` explicitly is a
-   * request for exactly the rows this predicate otherwise hides, so the
-   * exclusion is dropped and `fileSourceFilter` narrows to them instead.
+   * Asking for `acceptance` opts out of only that source filter. Agent-share
+   * provenance remains an access boundary for every ordinary resource read.
    */
   private fileScope = (sourceFilter?: ResourceSourceFilter) =>
     and(
@@ -336,6 +335,7 @@ export class KnowledgeRepo {
       sourceFilter === ResourceSourceFilter.Acceptance
         ? undefined
         : or(isNull(f.source), notInArray(f.source, LIBRARY_HIDDEN_FILE_SOURCES)),
+      notAgentShareFile(f.metadata),
     );
 
   private documentScope = () => buildWorkspaceWhere(this.scope(), d);
@@ -398,16 +398,32 @@ export class KnowledgeRepo {
       );
     }
 
-    return query
-      .leftJoin(d, eq(d.fileId, f.id))
-      .leftJoin(users, eq(users.id, f.userId))
-      .where(and(this.fileScope(sourceFilter), ...where));
+    return (
+      query
+        // Scope the joined document exactly as a direct read would. The file row
+        // itself is legitimately listed under `fileScope`, but its derived page
+        // can be scoped tighter (a creator-private document behind a
+        // workspace-public file); handing out that page's id makes the library
+        // list an entry that 404s the moment a member clicks it. Left join, so
+        // the file keeps its row and simply carries no page to open.
+        .leftJoin(d, and(eq(d.fileId, f.id), this.documentScope()))
+        .leftJoin(users, eq(users.id, f.userId))
+        .where(and(this.fileScope(sourceFilter), ...where))
+    );
   };
 
+  /**
+   * `includeAgentArtifacts` is the only opt-out from hiding machine-generated
+   * rows (`agent` / `agent-signal`): a knowledge-base listing shows exactly the
+   * rows the user filed into that base, agent artifacts included. Every other
+   * listing keeps them out — they are working files of the agent runtime, not
+   * library content, and they arrive by the hundreds.
+   */
   private documentArm = (
     where: (SQL | undefined)[],
     includeContent: boolean = true,
     includeContentPreview: boolean = false,
+    includeAgentArtifacts: boolean = false,
   ) =>
     this.db
       .select(
@@ -415,7 +431,16 @@ export class KnowledgeRepo {
       )
       .from(d)
       .leftJoin(users, eq(users.id, d.userId))
-      .where(and(this.documentScope(), ne(d.sourceType, 'file'), ...where));
+      .where(
+        and(
+          this.documentScope(),
+          ne(d.sourceType, 'file'),
+          includeAgentArtifacts
+            ? undefined
+            : notInArray(d.sourceType, [...AGENT_ARTIFACT_SOURCE_TYPES]),
+          ...where,
+        ),
+      );
 
   /**
    * Query combined results from files and documents tables
@@ -501,6 +526,7 @@ export class KnowledgeRepo {
       ],
       includeContent,
       includeContentPreview,
+      Boolean(knowledgeBaseId),
     );
 
     const rows = await unionAll(fileArm, documentArm)

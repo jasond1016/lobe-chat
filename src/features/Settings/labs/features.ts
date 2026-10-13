@@ -13,20 +13,22 @@ export type LabStage = 'alpha' | 'beta';
  */
 type LabFeatureI18nKey =
   | 'agentGraphConfig'
-  | 'agentProviderBinding'
   | 'artifactDeployment'
   | 'claudeCodeSdk'
   | 'codexAppServer'
   | 'desktopSplitView'
+  | 'deviceTunnel'
   | 'evalCapture'
+  | 'goals'
   | 'heteroSessionImport'
   | 'imessage'
   | 'inputMarkdown'
+  | 'integrations'
   | 'messageTextSelectionActions'
   | 'oauthApps'
+  | 'persistentSandbox'
   | 'projects'
-  | 'selfLearning'
-  | 'topicAcceptance';
+  | 'selfLearning';
 
 export interface LabFeatureItem {
   /** Only rendered (and searchable) in the Electron shell */
@@ -68,7 +70,15 @@ export const LAB_FEATURES: LabFeatureItem[] = [
   {
     flag: 'enableSelfLearning',
     i18nKey: 'selfLearning',
-    searchKeywords: ['self-evolving', 'self learning', 'rule base'],
+    searchKeywords: [
+      'self-evolving',
+      'self learning',
+      'rule base',
+      'rules',
+      'memory rules',
+      'delivery rules',
+      'verifier',
+    ],
     stage: 'alpha',
   },
   {
@@ -78,9 +88,15 @@ export const LAB_FEATURES: LabFeatureItem[] = [
     stage: 'alpha',
   },
   {
-    flag: 'enableTopicAcceptance',
-    i18nKey: 'topicAcceptance',
-    searchKeywords: ['acceptance', 'checklist'],
+    flag: 'enableGoals',
+    i18nKey: 'goals',
+    searchKeywords: ['goal', 'goals', 'objective'],
+    stage: 'beta',
+  },
+  {
+    flag: 'enableDeviceTunnel',
+    i18nKey: 'deviceTunnel',
+    searchKeywords: ['tunnel', 'port forwarding', 'dev server', 'localhost'],
     stage: 'alpha',
   },
   {
@@ -94,6 +110,18 @@ export const LAB_FEATURES: LabFeatureItem[] = [
     i18nKey: 'oauthApps',
     searchKeywords: ['oauth', 'oauth apps'],
     stage: 'beta',
+  },
+  {
+    flag: 'enableIntegrations',
+    i18nKey: 'integrations',
+    searchKeywords: ['integrations', 'github', 'github app', 'pull request'],
+    stage: 'alpha',
+  },
+  {
+    flag: 'enablePersistentSandbox',
+    i18nKey: 'persistentSandbox',
+    searchKeywords: ['persistent sandbox', 'workspace', 'sandbox storage'],
+    stage: 'alpha',
   },
   {
     flag: 'enableArtifactDeployment',
@@ -113,13 +141,6 @@ export const LAB_FEATURES: LabFeatureItem[] = [
     flag: 'enableImessage',
     i18nKey: 'imessage',
     searchKeywords: ['imessage', 'bluebubbles'],
-    stage: 'alpha',
-  },
-  {
-    desktopOnly: true,
-    flag: 'enableAgentProviderBinding',
-    i18nKey: 'agentProviderBinding',
-    searchKeywords: ['agent provider binding', 'claude code api', 'codex api', 'api provider'],
     stage: 'alpha',
   },
   {

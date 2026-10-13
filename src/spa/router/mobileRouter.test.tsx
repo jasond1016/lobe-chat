@@ -1,28 +1,26 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { ReactElement } from 'react';
 import { matchRoutes } from 'react-router';
 import { describe, expect, it } from 'vitest';
 
 import { mobileRoutes } from './mobileRouter.config';
+import { getRouteMetaFromHandle } from './routeMeta';
 
 describe('mobileRouter agent share route', () => {
-  it('serves the agent-share visitor surface on mobile through the shared /agent/:aid route', () => {
-    const matches = matchRoutes(mobileRoutes, '/agent/my-agent');
-
-    // Visitor and creator surfaces share this route; `AgentRouteSwitch` picks.
-    expect(matches?.some((match) => match.route.path === ':aid')).toBe(true);
-    expect(matches?.at(-1)?.params).toMatchObject({ aid: 'my-agent' });
+  it('leaves the agent-share visitor surface to the business routes', () => {
+    // Agent sharing runs a visitor's conversation on the creator's account, so
+    // the surface ships with the deployment that does that accounting and
+    // registers itself through `BusinessMobileRoutesWithoutMainLayout`.
+    // Nothing claims `/a/*` any more, so it falls through to not-found.
+    expect(matchRoutes(mobileRoutes, '/a/my-agent')?.at(-1)?.route.path).toBe('*');
   });
 
-  it('redirects legacy /share/agent links instead of bouncing to the catch-all', () => {
-    const matches = matchRoutes(mobileRoutes, '/share/agent/my-agent');
-    const element = matches?.at(-1)?.route.element as ReactElement;
+  it('keeps the creator agent surface on /agent/:aid', () => {
+    const matches = matchRoutes(mobileRoutes, '/agent/my-agent');
 
-    expect(matches?.at(-1)?.route.path).toBe('/share/agent/:slugOrId');
-    expect(matches?.at(-1)?.params).toMatchObject({ slugOrId: 'my-agent' });
-    expect((element.type as { displayName?: string }).displayName).toBe('AgentShareLegacyRedirect');
+    expect(matches?.some((match) => match.route.path === ':aid')).toBe(true);
+    expect(matches?.at(-1)?.params).toMatchObject({ aid: 'my-agent' });
   });
 });
 
@@ -39,8 +37,10 @@ describe('mobileRouter task routes', () => {
     expect(source).toContain("import('@/routes/(main)/agent/task/[taskId]')");
     expect(source).toContain("path: 'tasks'");
     expect(source).toContain("path: 'task'");
-    expect(source).toContain("path: ':taskId'");
-    expect(source).toContain("path: ':aid/task/:taskId'");
+    // The `:slug?` tail is the readable title segment; it never resolves the
+    // task, so pre-slug links keep matching the same route.
+    expect(source).toContain("path: ':taskId/:slug?'");
+    expect(source).toContain("path: ':aid/task/:taskId/:slug?'");
     expect(source).not.toContain("import('@/routes/(main)/tasks/_layout')");
   });
 });
@@ -67,7 +67,7 @@ describe('mobileRouter workspace provider routes', () => {
 });
 
 describe('mobile community route layouts', () => {
-  it('wraps shared community list and detail pages in SWR suspense boundaries', async () => {
+  it('renders community list and detail pages without layout-level SWR suspense', async () => {
     const readLayout = (layoutPath: string) =>
       readFile(path.join(process.cwd(), layoutPath), 'utf8');
 
@@ -77,13 +77,38 @@ describe('mobile community route layouts', () => {
     ]);
 
     for (const source of [listLayout, detailLayout]) {
-      expect(source).toContain("import { SWRConfig } from 'swr'");
-      expect(source).toContain(
-        "import SuspenseRouteBoundary from '@/components/SuspenseRouteBoundary'",
-      );
-      expect(source).toContain('<SWRConfig value={{ suspense: true }}>');
-      expect(source).toContain('<SuspenseRouteBoundary>');
+      expect(source).not.toContain('SWRConfig');
+      expect(source).not.toContain('SuspenseRouteBoundary');
+      expect(source).toContain('<RouteSkeletonChromeProvider>');
       expect(source).toContain('<Outlet />');
     }
+  });
+
+  it('declares a route skeleton for the community list and detail layouts', () => {
+    const listMatches = matchRoutes(mobileRoutes, '/community/agent');
+    const detailMatches = matchRoutes(mobileRoutes, '/community/agent/my-agent');
+
+    expect(listMatches?.some((match) => getRouteMetaFromHandle(match.route.handle)?.Skeleton)).toBe(
+      true,
+    );
+    expect(
+      detailMatches?.some((match) => getRouteMetaFromHandle(match.route.handle)?.Skeleton),
+    ).toBe(true);
+  });
+});
+
+describe('mobileRouter page routes', () => {
+  it('renders /page/:id instead of falling through to the catch-all redirect', () => {
+    const matches = matchRoutes(mobileRoutes, '/page/docs_abc123');
+
+    expect(matches?.at(-1)?.route.path).toBe(':id');
+    expect(matches?.at(-1)?.params).toMatchObject({ id: 'docs_abc123' });
+  });
+
+  it('mirrors the page detail route under a workspace slug', () => {
+    const matches = matchRoutes(mobileRoutes, '/my-team/page/docs_abc123');
+
+    expect(matches?.some((match) => match.route.path === ':workspaceSlug')).toBe(true);
+    expect(matches?.at(-1)?.route.path).toBe(':id');
   });
 });

@@ -98,6 +98,8 @@ export interface AsyncTaskErrorBody {
   persistErrors?: AsyncTaskStructuredErrorItem[];
   progressErrors?: AsyncTaskStructuredErrorItem[];
   retrievalErrors?: AsyncTaskStructuredErrorItem[];
+  /** Earliest retry time for this failure, as an ISO timestamp. */
+  retryAt?: string;
 }
 
 export interface IAsyncTaskError {
@@ -199,8 +201,15 @@ export interface HourlyUserMemoryExtractionMetadata {
   startedAt: string;
 }
 
+export type VideoGenerationCompletionMode = 'polling' | 'webhook';
+
 export interface VideoGenerationTaskMetadata {
-  precharge?: Record<string, unknown>;
+  completionClaimedAt?: string;
+  completionEventId?: string;
+  completionMode?: VideoGenerationCompletionMode;
+  precharge?: unknown;
+  previousGenerationId?: string;
+  route?: VideoGenerationRoute;
   /**
    * Origin of the submitting request, carried across the async boundary so the
    * completion charge (webhook / polling) can keep the spend attributed.
@@ -211,4 +220,10 @@ export interface VideoGenerationTaskMetadata {
    */
   spendOrigin?: SpendOrigin;
   webhookToken?: string;
+}
+
+export interface VideoGenerationRoute {
+  apiType: string;
+  channelId?: string;
+  routerId?: string;
 }

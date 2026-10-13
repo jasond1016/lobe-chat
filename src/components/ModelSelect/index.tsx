@@ -1,6 +1,6 @@
 import { type ChatModelCard } from '@lobechat/types';
 import { type IconAvatarProps } from '@lobehub/icons';
-import { LobeHub, ModelIcon, ProviderIcon } from '@lobehub/icons';
+import { LobeHub } from '@lobehub/icons';
 import { type FlexboxProps } from '@lobehub/ui';
 import { Flexbox, Icon, Tooltip } from '@lobehub/ui';
 import { Avatar, Tag, Text } from '@lobehub/ui/base-ui';
@@ -16,10 +16,11 @@ import {
 } from 'lucide-react';
 import { type ModelAbilities } from 'model-bank';
 import numeral from 'numeral';
-import { type CSSProperties, type FC } from 'react';
+import { type CSSProperties, type FC, type ReactNode } from 'react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { ModelIcon, ProviderIcon } from '@/components/LobeIcons';
 import { type AiProviderSourceType } from '@/types/aiProvider';
 import { formatTokenNumber } from '@/utils/format';
 
@@ -250,8 +251,14 @@ export const ModelInfoTags = memo<ModelInfoTagsProps>(
 interface ModelItemRenderProps extends ChatModelCard, Pick<FlexboxProps, 'className' | 'style'> {
   abilities?: ModelAbilities;
   audio?: boolean;
+  /** Replaces the default ability tags on the right side of the row */
+  extra?: ReactNode;
+  /** Inline marker after the name (and secondary text), e.g. an image-output icon */
+  nameSuffix?: ReactNode;
   newBadgeLabel?: string;
   proBadgeLabel?: string;
+  /** Muted text right after the model name, e.g. the current reasoning effort */
+  secondaryText?: string;
   showInfoTag?: boolean;
 }
 
@@ -261,11 +268,14 @@ export const ModelItemRender = memo<ModelItemRenderProps>(
     abilities,
     audio,
     contextWindowTokens,
+    extra,
     files,
     functionCall,
     imageOutput,
+    nameSuffix,
     newBadgeLabel,
     proBadgeLabel,
+    secondaryText,
     video,
     vision,
     id,
@@ -307,6 +317,12 @@ export const ModelItemRender = memo<ModelItemRenderProps>(
           >
             {displayNameOrId}
           </Text>
+          {secondaryText && (
+            <Text style={{ flex: 'none' }} type={'secondary'}>
+              {secondaryText}
+            </Text>
+          )}
+          {nameSuffix}
           {newBadgeLabel ? (
             <NewModelBadgeCore label={newBadgeLabel} releasedAt={releasedAt} />
           ) : (
@@ -318,18 +334,19 @@ export const ModelItemRender = memo<ModelItemRenderProps>(
             </Tag>
           )}
         </Flexbox>
-        {showInfoTag && (
-          <ModelInfoTags
-            audio={audio ?? abilities?.audio}
-            contextWindowTokens={contextWindowTokens}
-            files={files ?? abilities?.files}
-            functionCall={functionCall ?? abilities?.functionCall}
-            imageOutput={imageOutput ?? abilities?.imageOutput}
-            style={{ zoom: 0.9 }}
-            video={video ?? abilities?.video}
-            vision={vision ?? abilities?.vision}
-          />
-        )}
+        {extra ??
+          (showInfoTag && (
+            <ModelInfoTags
+              audio={audio ?? abilities?.audio}
+              contextWindowTokens={contextWindowTokens}
+              files={files ?? abilities?.files}
+              functionCall={functionCall ?? abilities?.functionCall}
+              imageOutput={imageOutput ?? abilities?.imageOutput}
+              style={{ zoom: 0.9 }}
+              video={video ?? abilities?.video}
+              vision={vision ?? abilities?.vision}
+            />
+          ))}
       </Flexbox>
     );
   },
