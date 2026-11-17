@@ -1,9 +1,19 @@
 'use client';
 
-import { Center, Flexbox, Icon } from '@lobehub/ui';
-import { Input, Select, Text, TextArea, toast, useModalContext } from '@lobehub/ui/base-ui';
-import { Form, useForm, useWatch } from '@lobehub/ui/base-ui/form';
-import { createStaticStyles, cssVar } from 'antd-style';
+import {
+  Center,
+  createStaticStyles,
+  cssVar,
+  Flexbox,
+  Icon,
+  Input,
+  Select,
+  Text,
+  TextArea,
+  toast,
+  useModalContext,
+} from '@lobehub/ui';
+import { Form, useForm, useWatch } from '@lobehub/ui/form';
 import { CheckIcon } from 'lucide-react';
 import { type FC, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -131,7 +141,8 @@ const DatasetCreateContent: FC<DatasetCreateContentProps> = ({
         benchmarkId,
         description: values.description,
         evalConfig:
-          values.evalMode === 'llm-rubric' && values.evalConfig?.judgePrompt
+          (values.evalMode === 'llm-rubric' || values.evalMode === 'rule-checklist') &&
+          values.evalConfig?.judgePrompt
             ? values.evalConfig
             : undefined,
         evalMode: values.evalMode || undefined,
@@ -211,12 +222,13 @@ const DatasetCreateContent: FC<DatasetCreateContentProps> = ({
             { label: t('evalMode.equals'), value: 'equals' },
             { label: t('evalMode.contains'), value: 'contains' },
             { label: t('evalMode.llm-rubric'), value: 'llm-rubric' },
+            { label: t('evalMode.rule-checklist'), value: 'rule-checklist' },
             { label: t('evalMode.external'), value: 'external' },
           ]}
         />
       </Form.Field>
 
-      {evalModeValue === 'llm-rubric' && (
+      {(evalModeValue === 'llm-rubric' || evalModeValue === 'rule-checklist') && (
         <Form.Field label={t('evalMode.prompt.label')} name="evalConfig.judgePrompt">
           <TextArea placeholder={t('evalMode.prompt.placeholder')} rows={3} />
         </Form.Field>

@@ -1,16 +1,29 @@
+import type { SandboxMode } from '@lobechat/builtin-tool-cloud-sandbox';
 import { CredsIdentifier, type ICredsService } from '@lobechat/builtin-tool-creds';
 import { CredsExecutionRuntime } from '@lobechat/builtin-tool-creds/executionRuntime';
 import debug from 'debug';
 
 import { UserModel } from '@/database/models/user';
 import { WorkspaceMemberModel } from '@/database/models/workspaceMember';
-import { MarketService } from '@/server/services/market';
+import type { MarketService } from '@/server/services/market';
 import { resolveSandboxSessionConfig } from '@/server/services/sandbox';
 
+import { type ToolExecutionContext } from '../types';
 import { resolveContentWorkspaceId } from './resolveWorkspaceScope';
+import { createSandboxMarketService } from './sandboxMarket';
 import { type ServerRuntimeRegistration } from './types';
 
 const log = debug('lobe-server:creds-runtime');
+
+/**
+ * The sandbox the topic's tool calls run in, resolved the same way the
+ * cloud-sandbox runtime resolves it. `instanceId` is the environment instance
+ * (`SandboxSessionConfig.environment`).
+ */
+export interface CredsSandboxTarget {
+  instanceId?: string;
+  mode?: SandboxMode;
+}
 
 /**
  * Server-side Creds Service implementation
@@ -22,23 +35,30 @@ export class ServerCredsService implements ICredsService {
 
   private isShareVisitor: boolean;
 
+  private sandboxTarget: CredsSandboxTarget;
+
   constructor(
     marketService: MarketService,
-    workspaceId?: string,
-    /**
-     * Belt-and-braces guard: true for an Agent Share visitor's run
-     * (`context.agentShareVisitor` set). `lobe-creds` is already absent from
-     * `AGENT_SHARE_ALLOWED_BUILTIN_IDENTIFIERS`, so this runtime should never
-     * be constructed for a visitor in the first place — but `injectCreds`
-     * refuses again here too, so the guarantee that the creator's decrypted
-     * credentials never land in a sandbox a visitor controls doesn't rest on
-     * the allowlist alone.
-     */
-    isShareVisitor = false,
+    options: {
+      /**
+       * Belt-and-braces guard: true for an Agent Share visitor's run
+       * (`context.agentShareVisitor` set). `lobe-creds` is already absent from
+       * `AGENT_SHARE_ALLOWED_BUILTIN_IDENTIFIERS`, so this runtime should never
+       * be constructed for a visitor in the first place — but `injectCreds`
+       * refuses again here too, so the guarantee that the creator's decrypted
+       * credentials never land in a sandbox a visitor controls doesn't rest on
+       * the allowlist alone.
+       */
+      isShareVisitor?: boolean;
+      /** Where the topic's tool calls run; injection must land in the same sandbox. */
+      sandboxTarget?: CredsSandboxTarget;
+      workspaceId?: string;
+    } = {},
   ) {
     this.marketService = marketService;
-    this.workspaceId = workspaceId;
-    this.isShareVisitor = isShareVisitor;
+    this.workspaceId = options.workspaceId;
+    this.isShareVisitor = options.isShareVisitor ?? false;
+    this.sandboxTarget = options.sandboxTarget ?? {};
   }
 
   /**
@@ -148,9 +168,17 @@ export class ServerCredsService implements ICredsService {
     // that, appending a masked `export` line after market's real one. Since
     // re-sourcing ~/.creds/env applies `export`s in file order, the masked
     // line silently shadowed the real credential for every later command.
+    //
+    // Injection is often a topic's first sandbox call, so it creates the
+    // session: without the mode and instance it lands on the throwaway
+    // runtime, and the topic's first persistent tool call then replaces that
+    // sandbox — discarding the credentials written here. Named one by one,
+    // like `callTool`'s context, so a dropped SDK field fails the build.
     const result = await this.marketService.market.creds.inject({
       keys: params.keys,
       sandbox: params.sandbox,
+      sandboxInstanceId: this.sandboxTarget.instanceId,
+      sandboxMode: this.sandboxTarget.mode,
       topicId: params.topicId,
       userId: params.userId,
     });
@@ -171,23 +199,18 @@ export class ServerCredsService implements ICredsService {
 
     return result as any;
   }
-
-  async saveKVCred(params: {
-    description?: string;
-    key: string;
-    name: string;
-    type: 'kv-env' | 'kv-header';
-    values: Record<string, string>;
-  }): Promise<{ id: number }> {
-    log('saveKVCred: key=%s, name=%s, type=%s', params.key, params.name, params.type);
-
-    const result = await this.credsAccessor().createKV(params);
-
-    log('saveKVCred success: id=%d', result.id);
-
-    return result;
-  }
 }
+
+/**
+ * Whether this run's commands can reach the cloud sandbox the credentials are
+ * written into — the same formula as the `creds_sandbox_reachable` prompt
+ * variable. A routed device runs `runCommand` / `execScript` on the device,
+ * except in `auto`, where the dedicated Cloud Sandbox tool still reaches the
+ * sandbox even though Skills' own `runCommand` goes to the device.
+ */
+const isCredsSandboxReachable = (
+  context: Pick<ToolExecutionContext, 'activeDeviceId' | 'executionPlan'>,
+): boolean => !context.activeDeviceId || context.executionPlan?.target === 'auto';
 
 /**
  * Creds Server Runtime
@@ -250,22 +273,21 @@ export const credsRuntime: ServerRuntimeRegistration = {
       workspaceId,
     });
 
-    const marketService = new MarketService({
+    const marketService = createSandboxMarketService(
+      context,
       accessToken,
-      userInfo: {
-        sandboxStorage: sandbox.claim,
-        userId: context.userId,
-        workspaceId,
-      },
-    });
-
-    const credsService = new ServerCredsService(
-      marketService,
       workspaceId,
-      Boolean(context.agentShareVisitor),
+      sandbox.claim,
     );
 
+    const credsService = new ServerCredsService(marketService, {
+      isShareVisitor: Boolean(context.agentShareVisitor),
+      sandboxTarget: { instanceId: sandbox.environment, mode: sandbox.mode },
+      workspaceId,
+    });
+
     return new CredsExecutionRuntime(credsService, {
+      sandboxReachable: isCredsSandboxReachable(context),
       topicId: context.topicId,
       userId: context.userId,
     });

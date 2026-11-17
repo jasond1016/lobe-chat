@@ -1,14 +1,14 @@
 'use client';
 
 import { useWatchBroadcast } from '@lobechat/electron-client-ipc';
-import { Flexbox, Popover, Tooltip } from '@lobehub/ui';
-import { ActionIcon } from '@lobehub/ui/base-ui';
-import { createStaticStyles } from 'antd-style';
+import { ActionIcon, createStaticStyles, Flexbox, Popover, Tooltip } from '@lobehub/ui';
 import { ArrowLeft, ArrowRight, Clock } from 'lucide-react';
 import { memo, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import ToggleLeftPanelButton from '@/features/NavPanel/ToggleLeftPanelButton';
+import { RAIL_WIDTH } from '@/features/NavRail/const';
+import { useImLayout } from '@/features/NavRail/useImLayout';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { electronSystemService } from '@/services/electron/system';
 import { useElectronStore } from '@/store/electron';
@@ -17,14 +17,16 @@ import type { GlobalState } from '@/store/global/initialState';
 import { systemStatusSelectors } from '@/store/global/selectors';
 import { getHomeStoreState } from '@/store/home';
 import { electronStylish } from '@/styles/electron';
-import { isMacOS } from '@/utils/platform';
+import { getPlatform, isMacOS } from '@/utils/platform';
 
 import { useNavigationHistory } from '../navigation/useNavigationHistory';
 import { getMacTrafficLightPadding } from './layout';
 import RecentlyViewed from './RecentlyViewed';
 import { useTrayMenuSync } from './TrayMenu/useTrayMenuSync';
+import WindowsAppMenu from './WindowsAppMenu';
 
 const isMac = isMacOS();
+const isWindows = getPlatform() === 'Windows';
 const COLLAPSED_NAVIGATION_BAR_WIDTH = 150;
 const MAC_COLLAPSED_NAVIGATION_BAR_WIDTH = 116;
 
@@ -39,7 +41,11 @@ const navPanelSelector = (s: GlobalState) => {
 };
 
 const useNavPanelWidth = () => {
-  return useGlobalStore(navPanelSelector);
+  const width = useGlobalStore(navPanelSelector);
+  // Under `im_layout` the list column starts after the icon rail, so the
+  // titlebar spans both.
+  const imLayout = useImLayout();
+  return imLayout && width > 0 ? width + RAIL_WIDTH : width;
 };
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
@@ -51,6 +57,10 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
   `,
   root: css`
     transition: width 0.2s ${cssVar.motionEaseOut};
+
+    &[data-resizing] {
+      transition: none;
+    }
 
     @media (prefers-reduced-motion: reduce) {
       transition: none;
@@ -68,6 +78,7 @@ const NavigationBar = memo(() => {
   const activeRecentScope = useElectronStore((state) => state.activeRecentScope);
 
   const leftPanelWidth = useNavPanelWidth();
+  const navPanelResizing = useGlobalStore((s) => !!s.isNavPanelResizing);
 
   useWatchBroadcast('windowFullscreenChanged', ({ isFullScreen }) => {
     if (isMac) setIsWindowFullScreen(isFullScreen);
@@ -140,9 +151,10 @@ const NavigationBar = memo(() => {
       horizontal
       align="center"
       className={styles.root}
+      data-resizing={navPanelResizing || undefined}
       data-width={leftPanelWidth}
       gap={8}
-      justify={isMac ? 'space-between' : 'end'}
+      justify={isMac || isWindows ? 'space-between' : 'end'}
       style={{
         paddingLeft: macTrafficLightPadding,
         paddingRight: 8,
@@ -151,13 +163,13 @@ const NavigationBar = memo(() => {
         width: navigationWidth,
       }}
     >
-      {/* The persistent panel toggle is macOS-only; other platforms keep the
-          in-page toggles, so the titlebar shows just the navigation controls. */}
+      {/* macOS keeps the sidebar toggle here. Windows uses the app icon as the menu. */}
       {isMac && (
         <Flexbox horizontal align="center" className={electronStylish.nodrag}>
           <ToggleLeftPanelButton forceVisible id={NAV_TOGGLE_ID} size="small" />
         </Flexbox>
       )}
+      {isWindows && <WindowsAppMenu />}
       <Flexbox horizontal align="center" className={electronStylish.nodrag} gap={2}>
         <ActionIcon disabled={!canGoBack} icon={ArrowLeft} size="small" onClick={goBack} />
         <ActionIcon disabled={!canGoForward} icon={ArrowRight} size="small" onClick={goForward} />

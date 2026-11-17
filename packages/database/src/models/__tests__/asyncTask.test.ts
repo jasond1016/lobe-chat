@@ -36,6 +36,27 @@ afterEach(async () => {
   await serverDB.delete(users).where(eq(users.id, userId));
 });
 
+const cancelledChatTopicMetadata = (): UserMemoryExtractionMetadata => ({
+  control: {
+    cancelRequestedAt: new Date().toISOString(),
+  },
+  progress: {
+    completedTopics: 0,
+    totalTopics: 1,
+  },
+  source: 'chat_topic',
+});
+
+const initialHourlyMetadata = (): HourlyUserMemoryExtractionMetadata => ({
+  progress: {
+    processedUsers: 0,
+    scheduledBatches: 0,
+    scheduledChildRuns: 0,
+  },
+  source: 'hourly_chat_topic',
+  startedAt: '2026-07-06T00:00:00.000Z',
+});
+
 describe('AsyncTaskModel', () => {
   describe('create', () => {
     it('should create a new async task', async () => {
@@ -131,6 +152,16 @@ describe('AsyncTaskModel', () => {
 
       expect(chunkTasks).toHaveLength(2);
       expect(chunkTasks.every((t) => t.type === AsyncTaskType.Chunking)).toBe(true);
+    });
+
+    it('should return an empty list without scanning for timeout when given no ids', async () => {
+      await serverDB
+        .insert(asyncTasks)
+        .values({ status: AsyncTaskStatus.Processing, type: AsyncTaskType.Chunking, userId });
+
+      const chunkTasks = await asyncTaskModel.findByIds([], AsyncTaskType.Chunking);
+
+      expect(chunkTasks).toEqual([]);
     });
   });
 
@@ -328,16 +359,7 @@ describe('AsyncTaskModel', () => {
       const [task] = await serverDB
         .insert(asyncTasks)
         .values({
-          metadata: {
-            control: {
-              cancelRequestedAt: new Date().toISOString(),
-            },
-            progress: {
-              completedTopics: 0,
-              totalTopics: 1,
-            },
-            source: 'chat_topic',
-          },
+          metadata: cancelledChatTopicMetadata(),
           status: AsyncTaskStatus.Processing,
           type: AsyncTaskType.UserMemoryExtractionWithChatTopic,
           userId,
@@ -353,16 +375,7 @@ describe('AsyncTaskModel', () => {
       const [task] = await serverDB
         .insert(asyncTasks)
         .values({
-          metadata: {
-            control: {
-              cancelRequestedAt: new Date().toISOString(),
-            },
-            progress: {
-              completedTopics: 0,
-              totalTopics: 1,
-            },
-            source: 'chat_topic',
-          },
+          metadata: cancelledChatTopicMetadata(),
           status: AsyncTaskStatus.Processing,
           type: AsyncTaskType.Chunking,
           userId,
@@ -381,16 +394,7 @@ describe('AsyncTaskModel', () => {
       const [task] = await serverDB
         .insert(asyncTasks)
         .values({
-          metadata: {
-            control: {
-              cancelRequestedAt: new Date().toISOString(),
-            },
-            progress: {
-              completedTopics: 0,
-              totalTopics: 1,
-            },
-            source: 'chat_topic',
-          },
+          metadata: cancelledChatTopicMetadata(),
           status: AsyncTaskStatus.Processing,
           type: AsyncTaskType.UserMemoryExtractionWithChatTopic,
           userId: otherUserId,
@@ -414,15 +418,7 @@ describe('AsyncTaskModel', () => {
       const task = await serverDB
         .insert(asyncTasks)
         .values({
-          metadata: {
-            progress: {
-              processedUsers: 0,
-              scheduledBatches: 0,
-              scheduledChildRuns: 0,
-            },
-            source: 'hourly_chat_topic',
-            startedAt: '2026-07-06T00:00:00.000Z',
-          },
+          metadata: initialHourlyMetadata(),
           status: AsyncTaskStatus.Processing,
           type: AsyncTaskType.UserMemoryExtractionHourly,
           userId,
@@ -514,15 +510,7 @@ describe('AsyncTaskModel', () => {
       const task = await serverDB
         .insert(asyncTasks)
         .values({
-          metadata: {
-            progress: {
-              processedUsers: 0,
-              scheduledBatches: 0,
-              scheduledChildRuns: 0,
-            },
-            source: 'hourly_chat_topic',
-            startedAt: '2026-07-06T00:00:00.000Z',
-          },
+          metadata: initialHourlyMetadata(),
           status: AsyncTaskStatus.Pending,
           type: AsyncTaskType.UserMemoryExtractionHourly,
           userId,
@@ -545,15 +533,7 @@ describe('AsyncTaskModel', () => {
       const task = await serverDB
         .insert(asyncTasks)
         .values({
-          metadata: {
-            progress: {
-              processedUsers: 0,
-              scheduledBatches: 0,
-              scheduledChildRuns: 0,
-            },
-            source: 'hourly_chat_topic',
-            startedAt: '2026-07-06T00:00:00.000Z',
-          },
+          metadata: initialHourlyMetadata(),
           status: AsyncTaskStatus.Pending,
           type: AsyncTaskType.UserMemoryExtractionHourly,
           userId,
@@ -641,6 +621,14 @@ describe('AsyncTaskModel', () => {
         .then((res) => res[0]);
 
       const requested = await asyncTaskModel.isHourlyMemoryExtractionCancellationRequested(task.id);
+
+      expect(requested).toBe(false);
+    });
+
+    it('should return false when the task id resolves to nothing', async () => {
+      const requested = await asyncTaskModel.isHourlyMemoryExtractionCancellationRequested(
+        '00000000-0000-0000-0000-000000000000',
+      );
 
       expect(requested).toBe(false);
     });
@@ -871,6 +859,32 @@ describe('initHourlyUserMemoryExtractionMetadata', () => {
       processedUsers: 4,
       scheduledBatches: 2,
       scheduledChildRuns: 3,
+    });
+  });
+
+  it('should leave upstash undefined when control carries none', () => {
+    const result = initHourlyUserMemoryExtractionMetadata({
+      control: { cancelRequestedAt: '2026-07-06T01:00:00.000Z' },
+      startedAt: '2026-07-06T00:00:00.000Z',
+    });
+
+    expect(result.control).toEqual({
+      cancelReason: undefined,
+      cancelRequestedAt: '2026-07-06T01:00:00.000Z',
+      cancelledBy: undefined,
+      upstash: undefined,
+    });
+  });
+
+  it('should default workflowRunIds to an empty list when upstash omits it', () => {
+    const result = initHourlyUserMemoryExtractionMetadata({
+      control: { upstash: { entryWorkflowRunId: 'entry-only' } },
+      startedAt: '2026-07-06T00:00:00.000Z',
+    });
+
+    expect(result.control?.upstash).toEqual({
+      entryWorkflowRunId: 'entry-only',
+      workflowRunIds: [],
     });
   });
 });

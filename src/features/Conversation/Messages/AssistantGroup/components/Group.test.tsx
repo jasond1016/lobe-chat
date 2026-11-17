@@ -30,8 +30,14 @@ vi.mock('@/store/chat/slices/operation/selectors', () => ({
   },
 }));
 
+// The `mcp_apps` flag's default: these cases cover the layout without MCP App views.
+vi.mock('@/store/serverConfig', () => ({
+  serverConfigSelectors: { enableMcpApps: () => false },
+  useServerConfigStore: (selector: (s: unknown) => unknown) => selector({}),
+}));
+
 // Mock the council list so importing Group doesn't pull in the AgentCouncil
-// render chain (→ shared-tool-ui inspectors → antd-style `keyframes`), which is
+// render chain (→ shared-tool-ui inspectors → `@lobehub/ui` `keyframes`), which is
 // out of scope for this unit test.
 vi.mock('../../AgentCouncil/components/CouncilList', () => ({
   default: ({ members }: { members?: unknown[] }) => <div>council:{members?.length ?? 0}</div>,
@@ -173,6 +179,21 @@ const parseAnswerSegments = () =>
 
 const parseWorkflowSegment = () =>
   JSON.parse(screen.getByTestId('workflow-segment').getAttribute('data-blocks') || '[]');
+
+const runningChecksInput = (): Parameters<typeof blk>[0] => ({
+  content: 'Running the checks.',
+  id: 'block-1',
+  tools: [
+    { apiName: 'bash', id: 'tool-1', result: { content: 'ok' } } as any,
+    { apiName: 'bash', id: 'tool-2', result: { content: 'ok' } } as any,
+  ],
+});
+
+const completedToolInput = (): Parameters<typeof blk>[0] => ({
+  content: '',
+  id: 'block-1',
+  tools: [{ apiName: 'bash', id: 'tool-1', result: { content: 'done' } } as any],
+});
 
 describe('Group', () => {
   afterEach(() => {
@@ -460,14 +481,7 @@ describe('Group', () => {
         isLatestItem={false}
         messageIndex={0}
         blocks={[
-          blk({
-            content: 'Running the checks.',
-            id: 'block-1',
-            tools: [
-              { apiName: 'bash', id: 'tool-1', result: { content: 'ok' } } as any,
-              { apiName: 'bash', id: 'tool-2', result: { content: 'ok' } } as any,
-            ],
-          }),
+          blk(runningChecksInput()),
           blk({ content: 'Here is the final answer.', id: 'block-2' }),
         ]}
       />,
@@ -495,14 +509,7 @@ describe('Group', () => {
         id="assistant-1"
         messageIndex={0}
         blocks={[
-          blk({
-            content: 'Running the checks.',
-            id: 'block-1',
-            tools: [
-              { apiName: 'bash', id: 'tool-1', result: { content: 'ok' } } as any,
-              { apiName: 'bash', id: 'tool-2', result: { content: 'ok' } } as any,
-            ],
-          }),
+          blk(runningChecksInput()),
           blk({ content: 'Here is the final answer.', id: 'block-2' }),
         ]}
       />,
@@ -521,14 +528,7 @@ describe('Group', () => {
         id="assistant-1"
         messageIndex={0}
         blocks={[
-          blk({
-            content: 'Running the checks.',
-            id: 'block-1',
-            tools: [
-              { apiName: 'bash', id: 'tool-1', result: { content: 'ok' } } as any,
-              { apiName: 'bash', id: 'tool-2', result: { content: 'ok' } } as any,
-            ],
-          }),
+          blk(runningChecksInput()),
           blk({ content: 'Here is the final answer.', id: 'block-2' }),
         ]}
       />,
@@ -545,14 +545,7 @@ describe('Group', () => {
         id="assistant-1"
         messageIndex={0}
         blocks={[
-          blk({
-            content: 'Running the checks.',
-            id: 'block-1',
-            tools: [
-              { apiName: 'bash', id: 'tool-1', result: { content: 'ok' } } as any,
-              { apiName: 'bash', id: 'tool-2', result: { content: 'ok' } } as any,
-            ],
-          }),
+          blk(runningChecksInput()),
           blk({ content: 'Here is the final answer.', id: 'block-2' }),
         ]}
       />,
@@ -651,18 +644,7 @@ describe('Group', () => {
   it('shows a running indicator below a settled single inline tool while still generating', () => {
     mockIsGenerating = true;
     render(
-      <Group
-        isLatestItem
-        id="assistant-1"
-        messageIndex={0}
-        blocks={[
-          blk({
-            content: '',
-            id: 'block-1',
-            tools: [{ apiName: 'bash', id: 'tool-1', result: { content: 'done' } } as any],
-          }),
-        ]}
-      />,
+      <Group isLatestItem blocks={[blk(completedToolInput())]} id="assistant-1" messageIndex={0} />,
     );
 
     expect(screen.getByTestId('tail-running')).toHaveAttribute('data-id', 'assistant-1');
@@ -676,16 +658,9 @@ describe('Group', () => {
     render(
       <Group
         isLatestItem
+        blocks={[blk(completedToolInput()), blk({ content: LOADING_FLAT, id: 'block-2' })]}
         id="assistant-1"
         messageIndex={0}
-        blocks={[
-          blk({
-            content: '',
-            id: 'block-1',
-            tools: [{ apiName: 'bash', id: 'tool-1', result: { content: 'done' } } as any],
-          }),
-          blk({ content: LOADING_FLAT, id: 'block-2' }),
-        ]}
       />,
     );
 
@@ -701,16 +676,9 @@ describe('Group', () => {
     render(
       <Group
         isLatestItem
+        blocks={[blk(completedToolInput()), blk({ content: '', id: 'block-2' })]}
         id="assistant-1"
         messageIndex={0}
-        blocks={[
-          blk({
-            content: '',
-            id: 'block-1',
-            tools: [{ apiName: 'bash', id: 'tool-1', result: { content: 'done' } } as any],
-          }),
-          blk({ content: '', id: 'block-2' }),
-        ]}
       />,
     );
 
@@ -773,18 +741,7 @@ describe('Group', () => {
   it('hides the running indicator once generation has finished', () => {
     mockIsGenerating = false;
     render(
-      <Group
-        isLatestItem
-        id="assistant-1"
-        messageIndex={0}
-        blocks={[
-          blk({
-            content: '',
-            id: 'block-1',
-            tools: [{ apiName: 'bash', id: 'tool-1', result: { content: 'done' } } as any],
-          }),
-        ]}
-      />,
+      <Group isLatestItem blocks={[blk(completedToolInput())]} id="assistant-1" messageIndex={0} />,
     );
 
     expect(screen.queryByTestId('tail-running')).not.toBeInTheDocument();
@@ -937,7 +894,7 @@ describe('Group', () => {
       expect(screen.queryByTestId('process-fold')).not.toBeInTheDocument();
     });
 
-    it('folds each turn separately and keeps the steer bubble between the folds', () => {
+    it('folds each turn separately and keeps every turn’s final answer outside its fold', () => {
       mockOperations = [];
 
       const { container } = render(
@@ -967,13 +924,43 @@ describe('Group', () => {
         Array.from(root.querySelectorAll('[data-testid="answer-segment"]')).map(
           (node) => JSON.parse(node.getAttribute('data-block') || '{}').id,
         );
-      expect(idsIn(folds[0]!)).toEqual(['a1', 'a2']);
+      expect(idsIn(folds[0]!)).toEqual(['a1']);
       expect(idsIn(folds[1]!)).toEqual(['b1']);
 
-      const outside = Array.from(container.querySelectorAll('[data-testid="answer-segment"]'))
-        .filter((node) => !folds.some((fold) => fold.contains(node)))
-        .map((node) => JSON.parse(node.getAttribute('data-block') || '{}').id);
-      expect(outside).toEqual(['b2']);
+      // A queued follow-up is only sent after the turn it follows has finished,
+      // so that turn's answer is a real reply and must stay readable, sitting
+      // between its own fold and the steer bubble.
+      const sequence = Array.from(container.querySelectorAll('[data-testid]'))
+        .filter((node) => !folds.some((fold) => fold !== node && fold.contains(node)))
+        .map((node) =>
+          node.getAttribute('data-testid') === 'answer-segment'
+            ? JSON.parse(node.getAttribute('data-block') || '{}').id
+            : node.getAttribute('data-testid'),
+        );
+      expect(sequence).toEqual(['process-fold', 'a2', 'steer-message', 'process-fold', 'b2']);
+    });
+
+    it('folds the whole of an earlier turn that stopped on a tool call', () => {
+      mockOperations = [];
+
+      render(
+        <Group
+          enableProcessFold
+          isLatestItem
+          blocks={[chain1[0]!]}
+          continuations={[{ blocks: chain2, id: 'group-2', steerUserId: 'steer-1' }]}
+          id="group-1"
+          messageIndex={0}
+        />,
+      );
+
+      const folds = screen.getAllByTestId('process-fold');
+      expect(folds).toHaveLength(2);
+      expect(
+        Array.from(folds[0]!.querySelectorAll('[data-testid="answer-segment"]')).map(
+          (node) => JSON.parse(node.getAttribute('data-block') || '{}').id,
+        ),
+      ).toEqual(['a1']);
     });
 
     it('keeps the loading placeholder of a continuation that is still being created', () => {
